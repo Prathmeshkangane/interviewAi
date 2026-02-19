@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { box-sizing: border-box; }
+
+  :root {
+    --void: #03040a;
+    --panel: rgba(12, 14, 28, 0.85);
+    --border: rgba(255, 255, 255, 0.08);
+    --cyan: #00d4ff;
+    --violet: #7c3aed;
+    --green: #00ff88;
+    --amber: #ffb300;
+    --red: #ff3d71;
+  }
+
+  body {
+    background: var(--void);
+    color: #e8eaf6;
+    overflow-x: hidden;
+  }
+
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+}
+
+@layer components {
+  .glass {
+    background: rgba(12, 14, 28, 0.7);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+
+  .glass-bright {
+    background: rgba(20, 22, 45, 0.8);
+    backdrop-filter: blur(24px) saturate(200%);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+
+  .btn-primary {
+    @apply relative overflow-hidden px-6 py-3 rounded-xl font-display font-semibold text-sm tracking-wide transition-all duration-300;
+    background: linear-gradient(135deg, #00d4ff 0%, #7c3aed 100%);
+    box-shadow: 0 0 30px rgba(0, 212, 255, 0.25);
+  }
+  .btn-primary:hover {
+    box-shadow: 0 0 50px rgba(0, 212, 255, 0.4);
+    transform: translateY(-1px);
+  }
+  .btn-primary:active { transform: translateY(0); }
+
+  .btn-ghost {
+    @apply px-5 py-2.5 rounded-xl font-display font-medium text-sm tracking-wide transition-all duration-200;
+    border: 1px solid rgba(255,255,255,0.1);
+    color: rgba(255,255,255,0.7);
+  }
+  .btn-ghost:hover {
+    border-color: rgba(0,212,255,0.4);
+    color: #00d4ff;
+    background: rgba(0,212,255,0.05);
+  }
+
+  .score-ring {
+    @apply relative flex items-center justify-center rounded-full;
+  }
+
+  .emotion-bar {
+    @apply h-1.5 rounded-full transition-all duration-500;
+  }
+
+  .waveform-bar {
+    @apply rounded-full transition-all;
+    background: linear-gradient(to top, #00d4ff, #7c3aed);
+  }
+
+  .transcript-line {
+    @apply py-2 px-3 rounded-lg text-sm font-body leading-relaxed transition-all duration-300;
+  }
+  .transcript-line.active {
+    background: rgba(0, 212, 255, 0.05);
+    border-left: 2px solid #00d4ff;
+  }
+}
