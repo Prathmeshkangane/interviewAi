@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { UploadScreen } from './pages/UploadScreen'
+import { PreviewScreen } from './pages/PreviewScreen'
 import { InterviewRoom } from './pages/InterviewRoom'
 import { PerformanceReport } from './pages/PerformanceReport'
 import type { AnalyzeDocsResponse, FeedbackResponse } from './lib/api'
 
-export type AppScreen = 'upload' | 'interview' | 'report'
+export type AppScreen = 'upload' | 'preview' | 'interview' | 'report'
 
 export interface SessionData {
   analysisResult: AnalyzeDocsResponse
@@ -38,10 +39,8 @@ export default function App() {
       <AnimatePresence mode="wait">
         {screen === 'upload' && (
           <motion.div key="upload"
-            initial={{ opacity: 0, y: 24 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -16 }}
-            transition={{ duration: 0.5 }}
+            initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -16 }} transition={{ duration: 0.4 }}
           >
             <UploadScreen
               onComplete={(data, name, title, jd) => {
@@ -53,18 +52,28 @@ export default function App() {
                   completedAnswers: [],
                   emotionSummary: {},
                 })
-                setScreen('interview')
+                setScreen('preview')
               }}
+            />
+          </motion.div>
+        )}
+
+        {screen === 'preview' && session && (
+          <motion.div key="preview"
+            initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -16 }} transition={{ duration: 0.4 }}
+          >
+            <PreviewScreen
+              session={session}
+              onStartInterview={() => setScreen('interview')}
             />
           </motion.div>
         )}
 
         {screen === 'interview' && session && (
           <motion.div key="interview"
-            initial={{ opacity: 0, y: 24 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -16 }}
-            transition={{ duration: 0.5 }}
+            initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -16 }} transition={{ duration: 0.4 }}
           >
             <InterviewRoom
               session={session}
@@ -78,17 +87,12 @@ export default function App() {
 
         {screen === 'report' && session && (
           <motion.div key="report"
-            initial={{ opacity: 0, y: 24 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -16 }}
-            transition={{ duration: 0.5 }}
+            initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -16 }} transition={{ duration: 0.4 }}
           >
             <PerformanceReport
               session={session}
-              onRestart={() => {
-                setSession(null)
-                setScreen('upload')
-              }}
+              onRestart={() => { setSession(null); setScreen('upload') }}
             />
           </motion.div>
         )}

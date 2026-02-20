@@ -122,13 +122,12 @@ export function UploadScreen({ onComplete }: Props) {
             onDragOver={e => { e.preventDefault(); setDragOver(true) }}
             onDragLeave={() => setDragOver(false)}
             onDrop={handleDrop}
-            className={`relative border-2 border-dashed rounded-xl p-8 flex flex-col items-center gap-3 cursor-pointer transition-all duration-300 ${
-              dragOver
+            className={`relative border-2 border-dashed rounded-xl p-8 flex flex-col items-center gap-3 cursor-pointer transition-all duration-300 ${dragOver
                 ? 'border-accent-cyan/60 bg-accent-cyan/5'
                 : resume
-                ? 'border-accent-green/40 bg-accent-green/5'
-                : 'border-white/10 hover:border-white/25 bg-white/2'
-            }`}
+                  ? 'border-accent-green/40 bg-accent-green/5'
+                  : 'border-white/10 hover:border-white/25 bg-white/2'
+              }`}
           >
             {resume ? (
               <>
@@ -194,7 +193,7 @@ export function UploadScreen({ onComplete }: Props) {
                 transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
                 className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full"
               />
-              <span>Analyzing with Gemini AI...</span>
+              <span>Analyzing...</span>
             </>
           ) : (
             <>
@@ -215,7 +214,7 @@ export function UploadScreen({ onComplete }: Props) {
       >
         {[
           { icon: FileText, text: 'PDF Resume Parsing' },
-          { icon: Sparkles, text: 'Gemini 2.5 Flash' },
+          { icon: Sparkles, text: 'AI Powered' },
           { icon: Briefcase, text: 'Tailored Questions' },
         ].map(({ icon: Icon, text }) => (
           <div key={text} className="flex items-center gap-2 px-4 py-2 rounded-full glass text-white/50 text-xs font-display font-medium">

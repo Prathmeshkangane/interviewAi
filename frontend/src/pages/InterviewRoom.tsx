@@ -211,13 +211,30 @@ export function InterviewRoom({ session, onComplete }: Props) {
           <div className="p-4 space-y-3">
             <div className="flex items-center justify-between mb-1">
               <span className="text-white/40 text-xs font-display uppercase tracking-widest">Facial Analysis</span>
-              {faceAnalysis.emotions.error && (
-                <span className="text-accent-amber/60 text-xs">Simulated</span>
-              )}
+              <div className="flex items-center gap-1.5">
+                <motion.div
+                  animate={{ opacity: faceAnalysis.emotions.faceDetected ? [1, 0.4, 1] : 1 }}
+                  transition={{ duration: 1.5, repeat: Infinity }}
+                  className="w-1.5 h-1.5 rounded-full"
+                  style={{ background: faceAnalysis.emotions.faceDetected ? '#00ff88' : '#ff3d71' }}
+                />
+                <span className="text-white/30 text-xs">
+                  {faceAnalysis.emotions.faceDetected ? 'Face detected' : 'No face'}
+                </span>
+              </div>
             </div>
             <EmotionBar label="Confidence" value={faceAnalysis.emotions.confidence} color="#00ff88" icon={<Zap size={12} />} />
             <EmotionBar label="Stress" value={faceAnalysis.emotions.stress} color="#ff3d71" icon={<Activity size={12} />} />
             <EmotionBar label="Neutral" value={faceAnalysis.emotions.neutral} color="#00d4ff" icon={<Eye size={12} />} />
+
+            {/* Interpretation label */}
+            <div className="pt-1 text-xs font-body text-center rounded-lg py-1.5"
+              style={{
+                background: getEmotionInterpretation(faceAnalysis.emotions).bg,
+                color: getEmotionInterpretation(faceAnalysis.emotions).color,
+              }}>
+              {getEmotionInterpretation(faceAnalysis.emotions).label}
+            </div>
           </div>
         </motion.div>
 
@@ -340,7 +357,7 @@ export function InterviewRoom({ session, onComplete }: Props) {
               <button disabled className="flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-display font-semibold text-sm text-white/50"
                 style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}>
                 <Loader2 size={16} className="animate-spin" />
-                Analyzing with Gemini...
+                Analyzing...
               </button>
             )}
             {phase === 'reviewed' && (
@@ -392,6 +409,14 @@ function ScoreBadge({ score }: { score: number }) {
       {score}<span className="text-xs font-normal text-white/30">/100</span>
     </div>
   )
+}
+
+function getEmotionInterpretation(e: { stress: number; confidence: number; neutral: number }) {
+  if (e.stress > 0.5) return { label: '😰 High stress detected — take a breath', color: '#ff3d71', bg: 'rgba(255,61,113,0.1)' }
+  if (e.confidence > 0.65) return { label: '💪 Strong confident presence', color: '#00ff88', bg: 'rgba(0,255,136,0.1)' }
+  if (e.confidence > 0.45) return { label: '🙂 Calm and composed', color: '#00d4ff', bg: 'rgba(0,212,255,0.1)' }
+  if (e.stress > 0.3) return { label: '😤 Slight nervousness — you got this', color: '#ffb300', bg: 'rgba(255,179,0,0.1)' }
+  return { label: '😐 Neutral expression', color: '#ffffff60', bg: 'rgba(255,255,255,0.05)' }
 }
 
 function difficultyBg(d?: string) {
