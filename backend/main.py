@@ -2,9 +2,18 @@
 InterviewAI - FastAPI Backend
 """
 import os
+import json
+import random
+import tempfile
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Any
+
 from huggingface_hub import hf_hub_download, snapshot_download
 
+
 def ensure_model():
+    # Download model weights
     if not os.path.exists("question_classifier.pt"):
         print("Downloading model weights...")
         hf_hub_download(
@@ -15,25 +24,30 @@ def ensure_model():
         )
         print("Model downloaded!")
 
-    if not os.path.exists("question_tokenizer"):
-        print("Downloading tokenizer...")
-        snapshot_download(
+    # Download tokenizer files individually
+    os.makedirs("question_tokenizer", exist_ok=True)
+
+    if not os.path.exists("question_tokenizer/tokenizer.json"):
+        print("Downloading tokenizer.json...")
+        hf_hub_download(
             repo_id="Prathmesh0001/interview-AI",
+            filename="question_tokenizer/tokenizer.json",
             local_dir=".",
-            token=os.getenv("HF_TOKEN"),
-            allow_patterns=["question_tokenizer/*"]
+            token=os.getenv("HF_TOKEN")
         )
-        print("Tokenizer downloaded!")
+        print("tokenizer.json downloaded!")
 
-ensure_model()
-import os
-import json
-import random
-import tempfile
-from datetime import datetime
-from pathlib import Path
-from typing import Optional, Any
+    if not os.path.exists("question_tokenizer/tokenizer_config.json"):
+        print("Downloading tokenizer_config.json...")
+        hf_hub_download(
+            repo_id="Prathmesh0001/interview-AI",
+            filename="question_tokenizer/tokenizer_config.json",
+            local_dir=".",
+            token=os.getenv("HF_TOKEN")
+        )
+        print("tokenizer_config.json downloaded!")
 
+# ── Now load everything else ───────────────────────────────────────────────────
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -188,13 +202,13 @@ class FeedbackResponse(BaseModel):
     trend:               Optional[Any] = None
 
 class ReportRequest(BaseModel):
-    candidate_name:       str
-    job_title:            str
-    questions:            list[str]
-    transcripts:          list[str]
-    feedbacks:            list[FeedbackResponse]
+    candidate_name:        str
+    job_title:             str
+    questions:             list[str]
+    transcripts:           list[str]
+    feedbacks:             list[FeedbackResponse]
     overall_session_score: int
-    emotion_summary:      dict
+    emotion_summary:       dict
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
@@ -230,7 +244,6 @@ async def analyze_docs(
     finally:
         os.unlink(tmp_path)
 
-    # ── Gemini generates tailored questions ───────────────────────────────────
     seed      = random.randint(10000, 99999)
     variation = random.choice([
         "Focus on past project failures and lessons learned.",
@@ -293,7 +306,6 @@ Return ONLY valid JSON:
     except Exception as e:
         raise HTTPException(500, f"AI analysis error: {str(e)}")
 
-    # ── Classify each question with our model ─────────────────────────────────
     for q in data.get("questions", []):
         classification = classify_question(q["question"])
         if classification:
@@ -309,7 +321,6 @@ Return ONLY valid JSON:
 @app.post("/get-feedback", response_model=FeedbackResponse)
 async def get_feedback(req: FeedbackRequest):
 
-    # ── Step 1: Our models run first (fast, no API cost) ──────────────────────
     fluency = analyze_fluency(req.transcript, req.duration_seconds or 0)
     star    = detect_star(req.transcript)
     trend   = track_confidence(
@@ -318,7 +329,6 @@ async def get_feedback(req: FeedbackRequest):
         req.duration_seconds or 0
     )
 
-    # ── Step 2: Emotion averages ───────────────────────────────────────────────
     if req.emotion_timeline:
         avg_stress = sum(e.stress     for e in req.emotion_timeline) / len(req.emotion_timeline)
         avg_conf   = sum(e.confidence for e in req.emotion_timeline) / len(req.emotion_timeline)
@@ -326,7 +336,6 @@ async def get_feedback(req: FeedbackRequest):
     else:
         avg_stress, avg_conf, avg_neut = 0.3, 0.5, 0.2
 
-    # ── Step 3: Gemini checks ONLY relevance + technical depth ────────────────
     prompt = f"""You are an expert interview coach. Evaluate ONLY the relevance and technical accuracy of this answer.
 Fluency, STAR structure, and confidence trend are already analyzed by separate models.
 
@@ -369,8 +378,6 @@ Return ONLY this JSON:
     except Exception as e:
         raise HTTPException(500, f"Feedback failed: {str(e)}")
 
-    # ── Step 4: Combine all scores ────────────────────────────────────────────
-    # Our models: 55% | Gemini: 45%
     overall = int(
         fluency["fluency_score"]      * 0.25 +
         star["star_score"]            * 0.20 +
@@ -381,7 +388,6 @@ Return ONLY this JSON:
     all_strengths    = fluency["strengths"]  + star["strengths"]  + trend["strengths"]  + gemini.get("strengths", [])
     all_improvements = fluency["issues"]     + star["feedback"]   + trend["feedback"]   + gemini.get("improvements", [])
 
-    # Deduplicate
     seen = set()
     unique_strengths = []
     for s in all_strengths:
@@ -475,7 +481,6 @@ async def generate_report(req: ReportRequest):
     for i, (q, t, fb) in enumerate(zip(req.questions, req.transcripts, req.feedbacks)):
         pdf.add_page()
 
-        # Question header
         pdf.set_fill_color(240, 242, 255)
         pdf.set_text_color(20, 20, 40)
         pdf.set_font("Helvetica", "B", 12)
@@ -486,9 +491,8 @@ async def generate_report(req: ReportRequest):
         pdf.multi_cell(0, 6, _sanitize(q))
         pdf.ln(2)
 
-        # STAR scores if available
         if fb.star:
-            star_data = fb.star if isinstance(fb.star, dict) else {}
+            star_data  = fb.star if isinstance(fb.star, dict) else {}
             star_score = star_data.get("star_score", 0)
             present    = ", ".join(star_data.get("present", [])) or "None"
             missing    = ", ".join(star_data.get("missing", [])) or "None"
@@ -497,7 +501,6 @@ async def generate_report(req: ReportRequest):
             pdf.cell(0, 6, f"STAR Score: {star_score}/100  |  Present: {_sanitize(present)}  |  Missing: {_sanitize(missing)}", ln=True)
             pdf.ln(1)
 
-        # Transcript
         pdf.set_font("Helvetica", "B", 10)
         pdf.set_text_color(30, 30, 50)
         pdf.cell(0, 7, "Response:", ln=True)
@@ -506,7 +509,6 @@ async def generate_report(req: ReportRequest):
         pdf.multi_cell(0, 5, _sanitize(t[:600] + ("..." if len(t) > 600 else "")))
         pdf.ln(2)
 
-        # Feedback
         pdf.set_font("Helvetica", "B", 10)
         pdf.set_text_color(30, 30, 50)
         pdf.cell(0, 7, "Feedback:", ln=True)
@@ -515,7 +517,6 @@ async def generate_report(req: ReportRequest):
         pdf.multi_cell(0, 5, _sanitize(fb.detailed_feedback))
         pdf.ln(2)
 
-        # Strengths
         pdf.set_font("Helvetica", "B", 10)
         pdf.set_text_color(20, 120, 60)
         pdf.cell(0, 6, "Strengths:", ln=True)
@@ -524,7 +525,6 @@ async def generate_report(req: ReportRequest):
             pdf.cell(0, 5, _sanitize(f"  + {s}"), ln=True)
         pdf.ln(1)
 
-        # Improvements
         pdf.set_font("Helvetica", "B", 10)
         pdf.set_text_color(180, 60, 20)
         pdf.cell(0, 6, "Improvements:", ln=True)
@@ -532,7 +532,6 @@ async def generate_report(req: ReportRequest):
         for imp in fb.improvements:
             pdf.cell(0, 5, _sanitize(f"  -> {imp}"), ln=True)
 
-        # WPM assessment
         if fb.wpm_assessment:
             pdf.ln(2)
             pdf.set_font("Helvetica", "I", 8)
