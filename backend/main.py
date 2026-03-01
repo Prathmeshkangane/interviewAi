@@ -51,7 +51,7 @@ def ensure_model():
     else:
         print("tokenizer_config.json already exists.")
 
-ensure_model()
+# ensure_model()
 
 # ── Now load everything else ───────────────────────────────────────────────────
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
@@ -101,7 +101,7 @@ try:
     class QuestionClassifier(nn.Module):
         def __init__(self, num_classes=5):
             super().__init__()
-            self.distilbert = DistilBertModel.from_pretrained("distilbert-base-uncased")
+            q_tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased", cache_dir="./bert_cache")
             self.classifier = nn.Sequential(
                 nn.Linear(768, 256), nn.ReLU(), nn.Dropout(0.3),
                 nn.Linear(256, 64),  nn.ReLU(), nn.Dropout(0.2),
