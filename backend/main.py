@@ -2,19 +2,28 @@
 InterviewAI - FastAPI Backend
 """
 import os
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 
 def ensure_model():
-    model_path = "question_classifier.pt"
-    if not os.path.exists(model_path):
-        print("Downloading model from Hugging Face...")
+    if not os.path.exists("question_classifier.pt"):
+        print("Downloading model weights...")
         hf_hub_download(
             repo_id="Prathmesh0001/interview-AI",
             filename="question_classifier.pt",
             local_dir=".",
             token=os.getenv("HF_TOKEN")
         )
-    return model_path
+        print("Model downloaded!")
+
+    if not os.path.exists("question_tokenizer"):
+        print("Downloading tokenizer...")
+        snapshot_download(
+            repo_id="Prathmesh0001/interview-AI",
+            local_dir=".",
+            token=os.getenv("HF_TOKEN"),
+            allow_patterns=["question_tokenizer/*"]
+        )
+        print("Tokenizer downloaded!")
 
 ensure_model()
 import os
