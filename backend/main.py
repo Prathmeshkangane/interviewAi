@@ -1,7 +1,22 @@
 """
 InterviewAI - FastAPI Backend
 """
+import os
+from huggingface_hub import hf_hub_download
 
+def ensure_model():
+    model_path = "question_classifier.pt"
+    if not os.path.exists(model_path):
+        print("Downloading model from Hugging Face...")
+        hf_hub_download(
+            repo_id="Prathmesh0001/interview-AI",
+            filename="question_classifier.pt",
+            local_dir=".",
+            token=os.getenv("HF_TOKEN")
+        )
+    return model_path
+
+ensure_model()
 import os
 import json
 import random
