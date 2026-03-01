@@ -17,6 +17,7 @@ __pycache__/
 pip-log.txt
 pip-delete-this-directory.txt
 
+
 # --- Environment & Security ---
 .env
 .env.local
@@ -30,3 +31,4 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+

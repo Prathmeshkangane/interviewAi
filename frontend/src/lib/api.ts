@@ -1,4 +1,12 @@
-const BASE = '/api'
+const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+
+export interface QuestionClassification {
+  category: string
+  confidence: number
+  tip: string
+  details: string[]
+  duration: string
+}
 
 export interface Question {
   id: number
@@ -6,6 +14,7 @@ export interface Question {
   category: string
   difficulty: 'Easy' | 'Medium' | 'Hard'
   what_to_look_for: string
+  classification?: QuestionClassification
 }
 
 export interface AnalyzeDocsResponse {
@@ -34,6 +43,44 @@ export interface FeedbackResponse {
   improvements: string[]
   detailed_feedback: string
   wpm_assessment: string
+  fluency?: {
+    fluency_score: number
+    filler_count: number
+    filler_rate_percent: number
+    filler_breakdown: Record<string, number>
+    hedge_count: number
+    confidence_markers: number
+    specific_numbers_used: number
+    wpm: number
+    repeated_words: string[]
+    issues: string[]
+    strengths: string[]
+  }
+  star?: {
+    star_score: number
+    components_found: number
+    components_detail: {
+      situation: boolean
+      task: boolean
+      action: boolean
+      result: boolean
+    }
+    present: string[]
+    missing: string[]
+    has_metrics: boolean
+    feedback: string[]
+    strengths: string[]
+  }
+  trend?: {
+    trend: string
+    trend_label: string
+    trend_color: string
+    beginning_score: number
+    middle_score: number
+    end_score: number
+    feedback: string[]
+    strengths: string[]
+  }
 }
 
 export interface ReportRequest {
@@ -50,7 +97,6 @@ export async function analyzeDocs(resume: File, jobDescription: string): Promise
   const form = new FormData()
   form.append('resume', resume)
   form.append('job_description', jobDescription)
-
   const res = await fetch(`${BASE}/analyze-docs`, { method: 'POST', body: form })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
@@ -63,12 +109,19 @@ export async function getFeedback(
   question: string,
   transcript: string,
   emotionTimeline: EmotionSnapshot[],
-  jobDescription?: string
+  jobDescription?: string,
+  durationSeconds?: number
 ): Promise<FeedbackResponse> {
   const res = await fetch(`${BASE}/get-feedback`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, transcript, emotion_timeline: emotionTimeline, job_description: jobDescription }),
+    body: JSON.stringify({
+      question,
+      transcript,
+      emotion_timeline: emotionTimeline,
+      job_description: jobDescription,
+      duration_seconds: durationSeconds ?? 0,
+    }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
