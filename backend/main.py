@@ -9,11 +9,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any
 
-from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub import hf_hub_download
 
 
 def ensure_model():
-    # Download model weights
     if not os.path.exists("question_classifier.pt"):
         print("Downloading model weights...")
         hf_hub_download(
@@ -24,7 +23,6 @@ def ensure_model():
         )
         print("Model downloaded!")
 
-    # Download tokenizer files individually
     os.makedirs("question_tokenizer", exist_ok=True)
 
     if not os.path.exists("question_tokenizer/tokenizer.json"):
@@ -46,6 +44,8 @@ def ensure_model():
             token=os.getenv("HF_TOKEN")
         )
         print("tokenizer_config.json downloaded!")
+
+ensure_model()
 
 # ── Now load everything else ───────────────────────────────────────────────────
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
@@ -85,12 +85,14 @@ try:
     class QuestionClassifier(nn.Module):
         def __init__(self, num_classes=5):
             super().__init__()
-            self.distilbert = DistilBertModel.from_pretrained("./question_tokenizer")
+            # Use distilbert-base-uncased (pre-cached during build)
+            self.distilbert = DistilBertModel.from_pretrained("distilbert-base-uncased")
             self.classifier = nn.Sequential(
                 nn.Linear(768, 256), nn.ReLU(), nn.Dropout(0.3),
                 nn.Linear(256, 64),  nn.ReLU(), nn.Dropout(0.2),
                 nn.Linear(64, 5)
             )
+
         def forward(self, input_ids, attention_mask):
             out = self.distilbert(input_ids=input_ids, attention_mask=attention_mask)
             return self.classifier(out.last_hidden_state[:, 0, :])
@@ -131,7 +133,7 @@ try:
     }
 
     q_device    = torch.device("cpu")
-    q_tokenizer = DistilBertTokenizer.from_pretrained("./question_tokenizer")
+    q_tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
     q_model     = QuestionClassifier()
     q_model.load_state_dict(torch.load("question_classifier.pt", map_location=q_device))
     q_model.eval()
