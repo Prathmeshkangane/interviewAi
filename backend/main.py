@@ -22,6 +22,8 @@ def ensure_model():
             token=os.getenv("HF_TOKEN")
         )
         print("Model downloaded!")
+    else:
+        print("Model already exists, skipping download.")
 
     os.makedirs("question_tokenizer", exist_ok=True)
 
@@ -34,6 +36,8 @@ def ensure_model():
             token=os.getenv("HF_TOKEN")
         )
         print("tokenizer.json downloaded!")
+    else:
+        print("tokenizer.json already exists.")
 
     if not os.path.exists("question_tokenizer/tokenizer_config.json"):
         print("Downloading tokenizer_config.json...")
@@ -44,6 +48,8 @@ def ensure_model():
             token=os.getenv("HF_TOKEN")
         )
         print("tokenizer_config.json downloaded!")
+    else:
+        print("tokenizer_config.json already exists.")
 
 ensure_model()
 
@@ -82,10 +88,19 @@ q_tokenizer = None
 try:
     from transformers import DistilBertTokenizer, DistilBertModel
 
+    # DEBUG - check what files exist
+    print("=== DEBUG ===")
+    print("Current directory:", os.getcwd())
+    print("Files in dir:", os.listdir("."))
+    print("question_classifier.pt exists:", os.path.exists("question_classifier.pt"))
+    print("question_tokenizer exists:", os.path.exists("question_tokenizer"))
+    if os.path.exists("question_tokenizer"):
+        print("Tokenizer files:", os.listdir("question_tokenizer"))
+    print("=============")
+
     class QuestionClassifier(nn.Module):
         def __init__(self, num_classes=5):
             super().__init__()
-            # Use distilbert-base-uncased (pre-cached during build)
             self.distilbert = DistilBertModel.from_pretrained("distilbert-base-uncased")
             self.classifier = nn.Sequential(
                 nn.Linear(768, 256), nn.ReLU(), nn.Dropout(0.3),
@@ -135,12 +150,18 @@ try:
     q_device    = torch.device("cpu")
     q_tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
     q_model     = QuestionClassifier()
-    q_model.load_state_dict(torch.load("question_classifier.pt", map_location=q_device))
+
+    model_path  = "question_classifier.pt"
+    print(f"Loading model from: {model_path}")
+    q_model.load_state_dict(torch.load(model_path, map_location=q_device))
     q_model.eval()
     CLASSIFIER_AVAILABLE = True
-    print("Question classifier loaded!")
+    print("Question classifier loaded successfully!")
+
 except Exception as e:
     print(f"Question classifier not loaded (will skip): {e}")
+    import traceback
+    traceback.print_exc()
 
 
 def classify_question(question: str) -> Optional[dict]:
