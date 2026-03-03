@@ -10,8 +10,7 @@ import { useFaceAnalysis } from '../hooks/useFaceAnalysis'
 import { getFeedback } from '../lib/api'
 import type { FeedbackResponse, Question } from '../lib/api'
 import type { SessionData } from '../App'
-import { InterviewerAvatar } from '../components/InterviewerAvatar'
-import type { InterviewerAvatarHandle } from '../components/InterviewerAvatar'
+
 
 interface Props {
   session: SessionData
@@ -28,7 +27,38 @@ export function InterviewRoom({ session, onComplete }: Props) {
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
-  const avatarRef = useRef<InterviewerAvatarHandle>(null)
+  const isSpeakingRef = useRef(false)
+  const [isTTSSpeaking, setIsTTSSpeaking] = useState(false)
+
+  // ── TTS: speak question aloud, no avatar needed ──
+  const speakQuestion = useCallback((text: string, onEnd?: () => void) => {
+    if (!window.speechSynthesis) { onEnd?.(); return }
+    window.speechSynthesis.cancel()
+    setTimeout(() => {
+      const utt = new SpeechSynthesisUtterance(text)
+      utt.rate = 0.88
+      utt.pitch = 0.95
+      utt.volume = 1.0
+      const voices = window.speechSynthesis.getVoices()
+      const pick = voices.find(v =>
+        v.lang.startsWith('en') && (
+          v.name.includes('Daniel') || v.name.includes('Google UK English Male') ||
+          v.name.includes('Alex') || v.name.includes('Fred') || v.name.includes('Arthur')
+        )
+      ) || voices.find(v => v.lang === 'en-GB') || voices.find(v => v.lang === 'en-US') || voices[0]
+      if (pick) utt.voice = pick
+      utt.onstart = () => { isSpeakingRef.current = true; setIsTTSSpeaking(true) }
+      utt.onend = () => { isSpeakingRef.current = false; setIsTTSSpeaking(false); onEnd?.() }
+      utt.onerror = () => { isSpeakingRef.current = false; setIsTTSSpeaking(false); onEnd?.() }
+      window.speechSynthesis.speak(utt)
+    }, 400)
+  }, [])
+
+  const stopSpeaking = useCallback(() => {
+    window.speechSynthesis?.cancel()
+    isSpeakingRef.current = false
+    setIsTTSSpeaking(false)
+  }, [])
 
   const speech = useSpeech()
   const faceAnalysis = useFaceAnalysis(videoRef)
@@ -51,19 +81,18 @@ export function InterviewRoom({ session, onComplete }: Props) {
     return () => { active = false; streamRef.current?.getTracks().forEach(t => t.stop()) }
   }, [])
 
-  // Auto-speak question when it changes or on ready
+  // Auto-speak question aloud when question changes
   useEffect(() => {
     if (phase === 'ready' && currentQ?.question) {
-      // Small delay so avatar has time to render
       const t = setTimeout(() => {
-        avatarRef.current?.speak(currentQ.question)
-      }, 800)
+        speakQuestion(currentQ.question)
+      }, 600)
       return () => clearTimeout(t)
     }
   }, [qIndex, phase])
 
   const startRecording = useCallback(() => {
-    avatarRef.current?.stopSpeaking()
+    stopSpeaking()
     setPhase('recording')
     setActiveTab('transcript')
     speech.reset()
@@ -198,26 +227,168 @@ export function InterviewRoom({ session, onComplete }: Props) {
       {/* Main split */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-4">
 
-        {/* LEFT — Interviewer Avatar + PiP webcam */}
+        {/* LEFT — Live Coach + Rich Video Analysis */}
         <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.1 }} className="glass rounded-2xl overflow-hidden flex flex-col">
 
-          {/* Interviewer Avatar */}
+          {/* ── TTS Speaking indicator ── */}
+          <AnimatePresence>
+            {isTTSSpeaking && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                className="mx-4 mt-3 rounded-xl px-4 py-2.5 flex items-center gap-3"
+                style={{ background: 'rgba(124,58,237,0.15)', border: '1px solid rgba(124,58,237,0.3)' }}
+              >
+                <div className="flex gap-0.5 items-end h-4 shrink-0">
+                  {[0, 1, 2, 1, 0].map((h, i) => (
+                    <motion.div key={i} className="w-0.5 rounded-full"
+                      style={{ background: '#a78bfa' }}
+                      animate={{ height: [`${(h + 1) * 3}px`, `${(h + 1) * 3 + 8}px`, `${(h + 1) * 3}px`] }}
+                      transition={{ duration: 0.5, repeat: Infinity, delay: i * 0.09 }} />
+                  ))}
+                </div>
+                <span className="text-white/70 text-xs font-display">Interviewer is speaking...</span>
+                <button onClick={stopSpeaking}
+                  className="ml-auto text-white/30 hover:text-white/70 text-xs font-display transition-colors">
+                  Skip ›
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* ── Live Coach ── */}
           <div className="p-4 pb-2">
-            <InterviewerAvatar
-              ref={avatarRef}
-              questionText={currentQ?.question ?? ''}
-              questionNumber={qIndex + 1}
-              totalQuestions={questions.length}
-              phase={phase}
-            />
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-7 h-7 rounded-lg flex items-center justify-center"
+                style={{ background: 'rgba(124,58,237,0.2)', border: '1px solid rgba(124,58,237,0.3)' }}>
+                <Brain size={14} className="text-accent-violet" />
+              </div>
+              <span className="text-white/55 text-xs font-display font-semibold uppercase tracking-widest">Live Coach</span>
+              {phase === 'recording' && (
+                <motion.div animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 1.2, repeat: Infinity }}
+                  className="ml-auto w-1.5 h-1.5 rounded-full bg-accent-red" />
+              )}
+            </div>
+
+            {/* Category tip */}
+            {classification && (
+              <div className="rounded-xl p-3 mb-3"
+                style={{ background: categoryColor(classification.category) + '12', border: `1px solid ${categoryColor(classification.category)}28` }}>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-base">{categoryEmoji(classification.category)}</span>
+                  <span className="font-display font-bold text-xs" style={{ color: categoryColor(classification.category) }}>
+                    {classification.category}
+                  </span>
+                  <span className="text-white/25 text-xs ml-auto">⏱ {classification.duration}</span>
+                </div>
+                <p className="text-white/70 text-xs font-display font-semibold leading-snug">💡 {classification.tip}</p>
+              </div>
+            )}
+
+            {/* STAR live tracker */}
+            <div className="glass-bright rounded-xl p-3 mb-3">
+              <div className="flex items-center gap-2 mb-2.5">
+                <Target size={12} className="text-accent-violet" />
+                <span className="text-white/45 text-xs font-display font-semibold uppercase tracking-widest">STAR Live Tracker</span>
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {([
+                  { key: 'S', label: 'Situation', hint: 'Set the scene', keywords: ['when i was', 'at my', 'during my', 'we were', 'i was working', 'last year', 'in my role', 'the company', 'a few years'] },
+                  { key: 'T', label: 'Task', hint: 'Your role', keywords: ['i was responsible', 'my role', 'i needed to', 'i was asked', 'my job was', 'i had to', 'i owned', 'my objective'] },
+                  { key: 'A', label: 'Action', hint: 'What you did', keywords: ['i decided', 'i built', 'i created', 'i led', 'i implemented', 'i designed', 'first i', 'then i', 'i started', 'i worked'] },
+                  { key: 'R', label: 'Result', hint: 'The outcome', keywords: ['as a result', 'we achieved', 'which led', 'we reduced', 'we improved', 'the outcome', 'ultimately', 'we saved', 'the impact'] },
+                ] as const).map(({ key, label, hint, keywords }) => {
+                  const tl = speech.transcript.toLowerCase()
+                  const detected = phase !== 'ready' && keywords.some(k => tl.includes(k))
+                  return (
+                    <div key={key} className="text-center">
+                      <motion.div
+                        animate={detected ? { scale: [1, 1.18, 1] } : {}}
+                        transition={{ duration: 0.3 }}
+                        className="w-9 h-9 rounded-full flex items-center justify-center mx-auto mb-1 text-xs font-bold transition-all duration-500"
+                        style={{
+                          background: detected ? 'rgba(0,255,136,0.18)' : 'rgba(255,255,255,0.05)',
+                          border: detected ? '1.5px solid rgba(0,255,136,0.55)' : '1px solid rgba(255,255,255,0.1)',
+                          color: detected ? '#00ff88' : 'rgba(255,255,255,0.2)',
+                          boxShadow: detected ? '0 0 12px rgba(0,255,136,0.2)' : 'none',
+                        }}>
+                        {detected ? '✓' : key}
+                      </motion.div>
+                      <div className="text-white/50 text-xs font-display">{label.slice(0, 3)}</div>
+                      <div className="text-white/20" style={{ fontSize: '9px' }}>{hint}</div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Pace + progress */}
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <div className="glass-bright rounded-xl p-2.5">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Activity size={11} className="text-accent-cyan" />
+                  <span className="text-white/40 text-xs font-display">Pace</span>
+                </div>
+                {phase === 'recording' ? (
+                  speech.wpm > 0 ? (
+                    <>
+                      <div className="font-mono font-bold text-xl"
+                        style={{ color: speech.wpm < 100 ? '#ffb300' : speech.wpm > 180 ? '#ff3d71' : '#00ff88' }}>
+                        {speech.wpm}<span className="text-white/30 text-xs font-normal ml-1">wpm</span>
+                      </div>
+                      <div className="text-xs" style={{ color: speech.wpm < 100 ? '#ffb300' : speech.wpm > 180 ? '#ff3d71' : '#00ff88' }}>
+                        {speech.wpm < 100 ? '↓ Too slow' : speech.wpm > 180 ? '↑ Too fast' : '✓ Perfect'}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="font-mono font-bold text-xl text-white/20">–</div>
+                      <div className="text-white/25 text-xs">Waiting for speech</div>
+                    </>
+                  )
+                ) : <div className="text-white/20 text-xs mt-1">Starts on record</div>}
+              </div>
+              <div className="glass-bright rounded-xl p-2.5">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Zap size={11} className="text-accent-amber" />
+                  <span className="text-white/40 text-xs font-display">Progress</span>
+                </div>
+                {phase === 'recording' ? (
+                  <>
+                    <div className="font-mono font-bold text-xl text-white">
+                      {speech.wordCount}<span className="text-white/30 text-xs font-normal ml-1">words</span>
+                    </div>
+                    <div className="text-white/30 text-xs">{Math.round(speech.durationSeconds)}s elapsed</div>
+                  </>
+                ) : <div className="text-white/20 text-xs mt-1">Starts on record</div>}
+              </div>
+            </div>
+
+            {/* Answer structure hints (ready phase only) */}
+            {phase === 'ready' && classification && (
+              <div className="rounded-xl p-2.5 mb-2"
+                style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                <p className="text-white/30 text-xs font-display uppercase tracking-widest mb-1.5">How to structure your answer</p>
+                <div className="space-y-1">
+                  {classification.details.map((d, i) => (
+                    <div key={i} className="flex items-start gap-2 text-xs text-white/45 font-body">
+                      <span className="text-white/20 shrink-0 font-mono">{i + 1}.</span>{d}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Candidate PiP webcam */}
+          {/* ── Rich Video Analysis ── */}
           <div className="px-4 pb-2">
             <div className="relative rounded-xl overflow-hidden bg-black" style={{ aspectRatio: '16/9' }}>
               <video ref={videoRef} autoPlay muted playsInline
                 className="w-full h-full object-cover" style={{ transform: 'scaleX(-1)' }} />
+
+              {/* REC badge */}
               <AnimatePresence>
                 {phase === 'recording' && (
                   <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -229,55 +400,117 @@ export function InterviewRoom({ session, onComplete }: Props) {
                   </motion.div>
                 )}
               </AnimatePresence>
+
+              {/* Eye contact indicator — top right */}
+              <div className="absolute top-2 right-2 flex items-center gap-1.5 px-2 py-1 rounded-full"
+                style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(6px)' }}>
+                <div className="w-1.5 h-1.5 rounded-full"
+                  style={{
+                    background: emotions.eyeContact ? '#00ff88' : '#ff3d71',
+                    boxShadow: `0 0 5px ${emotions.eyeContact ? '#00ff88' : '#ff3d71'}`
+                  }} />
+                <span className="text-white/60 text-xs font-display">
+                  {emotions.eyeContact ? 'Eye ✓' : 'Look at camera'}
+                </span>
+              </div>
+
+              {/* You label */}
               <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-md text-xs font-display text-white/60"
                 style={{ background: 'rgba(0,0,0,0.6)' }}>You</div>
+
+              {/* WPM overlay */}
               <AnimatePresence>
                 {phase === 'recording' && speech.wpm > 0 && (
-                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                     className="absolute bottom-2 right-2 glass-bright rounded-lg px-2 py-1 text-center">
-                    <div className="font-mono text-sm font-bold text-white">{speech.wpm}</div>
+                    <div className="font-mono text-sm font-bold"
+                      style={{ color: speech.wpm < 100 ? '#ffb300' : speech.wpm > 180 ? '#ff3d71' : '#00ff88' }}>
+                      {speech.wpm}
+                    </div>
                     <div className="text-white/40 text-xs leading-none">WPM</div>
                   </motion.div>
                 )}
               </AnimatePresence>
+
+              {/* Engagement ring overlay — bottom center */}
+              {phase === 'recording' && (
+                <div className="absolute bottom-2 left-1/2 -translate-x-1/2">
+                  <div className="flex items-center gap-1.5 px-2 py-1 rounded-full"
+                    style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(6px)' }}>
+                    <span className="text-white/40 text-xs font-display">Engagement</span>
+                    <span className="font-mono text-xs font-bold"
+                      style={{ color: emotions.engagementScore > 70 ? '#00ff88' : emotions.engagementScore > 45 ? '#ffb300' : '#ff3d71' }}>
+                      {emotions.engagementScore}%
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
+          </div>
+
+          {/* ── Emotion + body language panel ── */}
+          <div className="px-4 pb-2 space-y-2">
+            {/* Emotion bars */}
+            <div className="flex items-center justify-between">
+              <span className="text-white/30 text-xs font-display uppercase tracking-widest">Body & Emotion</span>
+              <div className="text-xs px-2 py-0.5 rounded-full font-display font-semibold"
+                style={{ background: getEmotionInterpretation(emotions).bg, color: getEmotionInterpretation(emotions).color }}>
+                {getEmotionInterpretation(emotions).label}
+              </div>
+            </div>
+
+            <EmotionBar label="Confidence" value={emotions.confidence} color="#00ff88" icon={<Zap size={11} />} />
+            <EmotionBar label="Stress" value={emotions.stress} color="#ff3d71" icon={<Activity size={11} />} />
+            <EmotionBar label="Neutral" value={emotions.neutral} color="#00d4ff" icon={<Eye size={11} />} />
+
+            {/* Body language stats grid */}
+            <div className="grid grid-cols-4 gap-1.5 pt-1">
+              {[
+                {
+                  icon: '👁️',
+                  val: `${emotions.eyeContactScore}%`,
+                  label: 'Eye Contact',
+                  color: emotions.eyeContactScore > 70 ? '#00ff88' : emotions.eyeContactScore > 45 ? '#ffb300' : '#ff3d71',
+                },
+                {
+                  icon: '📐',
+                  val: emotions.postureGood ? 'Good' : 'Fix',
+                  label: 'Posture',
+                  color: emotions.postureGood ? '#00ff88' : '#ffb300',
+                },
+                {
+                  icon: '😊',
+                  val: String(emotions.smileCount),
+                  label: 'Smiles',
+                  color: emotions.smileCount > 2 ? '#00ff88' : 'white',
+                },
+                {
+                  icon: '👁',
+                  val: emotions.lookAwaySeconds > 0 ? `${emotions.lookAwaySeconds}s` : '0s',
+                  label: 'Look Away',
+                  color: emotions.lookAwaySeconds > 5 ? '#ff3d71' : emotions.lookAwaySeconds > 2 ? '#ffb300' : '#00ff88',
+                },
+              ].map(({ icon, val, label, color }) => (
+                <div key={label} className="text-center glass-bright rounded-lg py-1.5 px-1">
+                  <div className="text-xs">{icon}</div>
+                  <div className="font-mono text-xs font-bold mt-0.5" style={{ color }}>{val}</div>
+                  <div className="text-white/30 leading-none mt-0.5" style={{ fontSize: '9px' }}>{label}</div>
+                </div>
+              ))}
+            </div>
+
           </div>
 
           {/* Alert */}
           <AnimatePresence>
             {emotions.alert && (
               <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                className="mx-4 mb-2 rounded-xl px-3 py-2 text-xs font-display font-semibold text-white text-center"
+                className="mx-4 mb-3 rounded-xl px-3 py-2 text-xs font-display font-semibold text-white text-center"
                 style={{ background: 'rgba(255,61,113,0.85)', boxShadow: '0 0 16px rgba(255,61,113,0.4)' }}>
                 {emotions.alert}
               </motion.div>
             )}
           </AnimatePresence>
-
-          {/* Emotion bars */}
-          <div className="p-4 pt-1 space-y-2">
-            <span className="text-white/30 text-xs font-display uppercase tracking-widest">Your Emotions</span>
-            <EmotionBar label="Confidence" value={emotions.confidence} color="#00ff88" icon={<Zap size={11} />} />
-            <EmotionBar label="Stress" value={emotions.stress} color="#ff3d71" icon={<Activity size={11} />} />
-            <EmotionBar label="Neutral" value={emotions.neutral} color="#00d4ff" icon={<Eye size={11} />} />
-            <div className="text-xs font-body text-center rounded-lg py-1"
-              style={{ background: getEmotionInterpretation(emotions).bg, color: getEmotionInterpretation(emotions).color }}>
-              {getEmotionInterpretation(emotions).label}
-            </div>
-            <div className="border-t border-white/6 pt-2 grid grid-cols-3 gap-1.5">
-              {[
-                { icon: '👁️', val: `${emotions.eyeContactScore}%`, label: 'Eye' },
-                { icon: '📐', val: emotions.postureGood ? 'Good' : 'Sit up', label: 'Posture', color: emotions.postureGood ? '#00ff88' : '#ffb300' },
-                { icon: '😊', val: String(emotions.smileCount), label: 'Smiles' },
-              ].map(({ icon, val, label, color }) => (
-                <div key={label} className="text-center glass-bright rounded-lg py-1.5">
-                  <div className="text-xs">{icon}</div>
-                  <div className="font-mono text-xs font-bold" style={{ color: color || 'white' }}>{val}</div>
-                  <div className="text-white/30" style={{ fontSize: '9px' }}>{label}</div>
-                </div>
-              ))}
-            </div>
-          </div>
         </motion.div>
 
         {/* RIGHT — Question + Transcript + Analysis */}
@@ -303,8 +536,8 @@ export function InterviewRoom({ session, onComplete }: Props) {
             {(['transcript', 'analysis'] as const).map(tab => (
               <button key={tab} onClick={() => setActiveTab(tab)}
                 className={`flex-1 py-2.5 text-xs font-display font-semibold uppercase tracking-widest transition-all ${activeTab === tab
-                    ? 'text-accent-cyan border-b-2 border-accent-cyan'
-                    : 'text-white/30 hover:text-white/60'
+                  ? 'text-accent-cyan border-b-2 border-accent-cyan'
+                  : 'text-white/30 hover:text-white/60'
                   }`}>
                 {tab}
               </button>
@@ -382,8 +615,8 @@ export function InterviewRoom({ session, onComplete }: Props) {
                       {(['situation', 'task', 'action', 'result'] as const).map(key => (
                         <div key={key} className="text-center">
                           <div className={`w-8 h-8 rounded-full flex items-center justify-center mx-auto mb-1 text-xs font-bold ${currentFeedback.star!.components_detail[key]
-                              ? 'bg-accent-green/20 text-accent-green'
-                              : 'bg-white/5 text-white/20'
+                            ? 'bg-accent-green/20 text-accent-green'
+                            : 'bg-white/5 text-white/20'
                             }`}>
                             {currentFeedback.star!.components_detail[key] ? '✓' : '✗'}
                           </div>
@@ -514,22 +747,6 @@ export function InterviewRoom({ session, onComplete }: Props) {
                 <p className="text-sm font-body">Analysis appears after you answer</p>
               </div>
             )}
-          </div>
-
-          {/* Engagement meter */}
-          <div className="px-4 pb-2">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-white/40 text-xs font-display">Engagement</span>
-              <span className="text-white/60 text-xs font-mono">
-                {emotions.engagementScore}%
-              </span>
-            </div>
-            <div className="h-1.5 bg-white/8 rounded-full overflow-hidden">
-              <motion.div className="h-full rounded-full"
-                style={{ background: 'linear-gradient(90deg, #7c3aed, #00ff88)' }}
-                animate={{ width: `${emotions.engagementScore}%` }}
-                transition={{ duration: 0.5 }} />
-            </div>
           </div>
 
           {/* Controls */}

@@ -18,6 +18,7 @@ pip-log.txt
 pip-delete-this-directory.txt
 backend/question_classifier.pt
 backend/question_tokenizer/
+backend/bert_cache/
 *.pt
 *.pth
 

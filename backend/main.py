@@ -51,7 +51,7 @@ def ensure_model():
     else:
         print("tokenizer_config.json already exists.")
 
-# ensure_model()
+ensure_model()  # ← now active for HF Spaces deployment
 
 # ── Now load everything else ───────────────────────────────────────────────────
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
@@ -101,7 +101,7 @@ try:
     class QuestionClassifier(nn.Module):
         def __init__(self, num_classes=5):
             super().__init__()
-            q_tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased", cache_dir="./bert_cache")
+            self.distilbert = DistilBertModel.from_pretrained("distilbert-base-uncased", cache_dir="./bert_cache")
             self.classifier = nn.Sequential(
                 nn.Linear(768, 256), nn.ReLU(), nn.Dropout(0.3),
                 nn.Linear(256, 64),  nn.ReLU(), nn.Dropout(0.2),
@@ -153,7 +153,7 @@ try:
 
     model_path  = "question_classifier.pt"
     print(f"Loading model from: {model_path}")
-    q_model.load_state_dict(torch.load(model_path, map_location=q_device))
+    q_model.load_state_dict(torch.load(model_path, map_location=q_device, weights_only=False))
     q_model.eval()
     CLASSIFIER_AVAILABLE = True
     print("Question classifier loaded successfully!")

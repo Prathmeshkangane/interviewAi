@@ -14,7 +14,8 @@ export interface EmotionState {
   eyeContactScore: number   // 0-100 running avg
   postureGood: boolean
   engagementScore: number   // 0-100
-  blinkRate: number   // blinks per minute (last 60s)
+  blinkRate: number       // blinks per minute (rolling 60s window)
+  blinkCount: number      // total blinks THIS question only
   smileCount: number
   lookAwaySeconds: number
   alert: string | null
@@ -35,7 +36,7 @@ export function useFaceAnalysis(videoRef: React.RefObject<HTMLVideoElement>) {
     stress: 0.15, confidence: 0.55, neutral: 0.4, happy: 0,
     raw: {}, ready: false, error: null, faceDetected: false,
     eyeContact: true, eyeContactScore: 100, postureGood: true,
-    engagementScore: 80, blinkRate: 15, smileCount: 0,
+    engagementScore: 80, blinkRate: 15, blinkCount: 0, smileCount: 0,
     lookAwaySeconds: 0, alert: null,
   })
 
@@ -54,6 +55,7 @@ export function useFaceAnalysis(videoRef: React.RefObject<HTMLVideoElement>) {
   const blinkWindowRef = useRef<number[]>([])
   const eyeOpennessHistRef = useRef<number[]>([])  // rolling 10-frame history
   const wasBlinkingRef = useRef(false)
+  const questionBlinkCountRef = useRef(0)          // resets each question
 
   // Eye movement variability (proxy for anxiety / scanning)
   const eyeXHistRef = useRef<number[]>([])  // rolling 30-frame history
@@ -218,20 +220,27 @@ export function useFaceAnalysis(videoRef: React.RefObject<HTMLVideoElement>) {
           const rightEAR = eyeAspectRatio(rightEye)
           const avgEAR = (leftEAR + rightEAR) / 2
 
-          // Track rolling EAR to detect blinks (EAR dips below 0.2 = blink)
+          // Smooth EAR over last 4 frames to reduce noise before threshold check
           eyeOpennessHistRef.current.push(avgEAR)
-          if (eyeOpennessHistRef.current.length > 10) eyeOpennessHistRef.current.shift()
+          if (eyeOpennessHistRef.current.length > 4) eyeOpennessHistRef.current.shift()
+          const smoothedEAR = eyeOpennessHistRef.current.reduce((s, v) => s + v, 0) / eyeOpennessHistRef.current.length
 
-          const isBlink = avgEAR < 0.20 && !wasBlinkingRef.current
-          const isOpen = avgEAR > 0.25
+          // Adaptive blink: closed = smoothedEAR < 0.24, open = smoothedEAR > 0.28
+          // Looser than raw 0.20 — catches deliberate eye closes clearly on webcam
+          const BLINK_CLOSE = 0.24
+          const BLINK_OPEN = 0.28
+
+          const isBlink = smoothedEAR < BLINK_CLOSE && !wasBlinkingRef.current
+          const isOpen = smoothedEAR > BLINK_OPEN
           if (isBlink) {
             wasBlinkingRef.current = true
             const now = Date.now()
             blinkWindowRef.current.push(now)
+            questionBlinkCountRef.current++        // per-question counter
           }
           if (isOpen) wasBlinkingRef.current = false
 
-          // Keep only blinks within last 60 seconds
+          // Keep only blinks within last 60 seconds for rate calculation
           const now60 = Date.now()
           blinkWindowRef.current = blinkWindowRef.current.filter(t => now60 - t < 60000)
           const blinkRate = blinkWindowRef.current.length
@@ -356,6 +365,7 @@ export function useFaceAnalysis(videoRef: React.RefObject<HTMLVideoElement>) {
             postureGood,
             engagementScore,
             blinkRate,
+            blinkCount: questionBlinkCountRef.current,
             smileCount: smileCountRef.current,
             lookAwaySeconds: Math.round(totalLookAwaySecsRef.current),
             alert: null,
@@ -377,6 +387,7 @@ export function useFaceAnalysis(videoRef: React.RefObject<HTMLVideoElement>) {
             confidence: smoothConfidence.current,
             neutral: smoothNeutral.current,
             faceDetected: false,
+            blinkCount: questionBlinkCountRef.current,
           }))
         }
       } catch { /* silent — keep running */ }
@@ -406,6 +417,7 @@ export function useFaceAnalysis(videoRef: React.RefObject<HTMLVideoElement>) {
         postureGood: Math.random() > 0.15,
         engagementScore: Math.round(clamp(0.70 + 0.15 * Math.sin(t * 0.8)) * 100),
         blinkRate: Math.round(14 + 4 * Math.sin(t)),
+        blinkCount: questionBlinkCountRef.current,
         smileCount: smileCountRef.current,
         lookAwaySeconds: Math.round(totalLookAwaySecsRef.current),
       }))
@@ -445,6 +457,7 @@ export function useFaceAnalysis(videoRef: React.RefObject<HTMLVideoElement>) {
     eyeXHistRef.current = []
     eyeYHistRef.current = []
     wasBlinkingRef.current = false
+    questionBlinkCountRef.current = 0     // reset per question
     alertCooldownRef.current = false
     baselineFaceSizeRef.current = 0
     baselineFramesRef.current = 0
