@@ -1,8 +1,9 @@
 from huggingface_hub import HfApi
 import os
 
+token = os.getenv("HF_TOKEN")
 api = HfApi()
-token = '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'
+
 
 # Upload model
 api.upload_file(

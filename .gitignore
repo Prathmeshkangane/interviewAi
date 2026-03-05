@@ -35,4 +35,11 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
-
+.env
+backend/.env
+backend/bert_cache/
+backend/__pycache__/
+backend/question_classifier.pt
+node_modules/
+hf-space/
+venv/
