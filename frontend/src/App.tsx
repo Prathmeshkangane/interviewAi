@@ -1,29 +1,53 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
+import { History } from 'lucide-react'
 import { UploadScreen } from './pages/UploadScreen'
 import { PreviewScreen } from './pages/PreviewScreen'
 import { InterviewRoom } from './pages/InterviewRoom'
 import { PerformanceReport } from './pages/PerformanceReport'
+import { SessionHistory } from './pages/SessionHistory'
+import { buildRecord, saveSession } from './lib/history'
+import { EMPTY_EMOTION_SUMMARY } from './hooks/useFaceAnalysis'
+import type { SessionEmotionSummary } from './hooks/useFaceAnalysis'
 import type { AnalyzeDocsResponse, FeedbackResponse } from './lib/api'
 
-export type AppScreen = 'upload' | 'preview' | 'interview' | 'report'
+export type AppScreen = 'upload' | 'preview' | 'interview' | 'report' | 'history'
+
+export interface CompletedAnswer {
+  questionIndex: number
+  question: string        // stored with the answer: follow-up questions are not in the original list
+  category: string
+  transcript: string
+  feedback: FeedbackResponse
+}
 
 export interface SessionData {
   analysisResult: AnalyzeDocsResponse
   jobDescription: string
   candidateName: string
   jobTitle: string
-  completedAnswers: {
-    questionIndex: number
-    transcript: string
-    feedback: FeedbackResponse
-  }[]
-  emotionSummary: Record<string, number>
+  completedAnswers: CompletedAnswer[]
+  emotionSummary: SessionEmotionSummary
+}
+
+const fadeIn = {
+  initial: { opacity: 0, y: 24 },
+  animate: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: -16 },
+  transition: { duration: 0.4 },
 }
 
 export default function App() {
   const [screen, setScreen] = useState<AppScreen>('upload')
+  const [historyFrom, setHistoryFrom] = useState<AppScreen>('upload')
   const [session, setSession] = useState<SessionData | null>(null)
+
+  const openHistory = () => {
+    setHistoryFrom(screen === 'history' ? 'upload' : screen)
+    setScreen('history')
+  }
+  // If the session was cleared while the history screen was open, fall back to upload
+  const closeHistory = () => setScreen(historyFrom !== 'upload' && !session ? 'upload' : historyFrom)
 
   return (
     <div className="min-h-screen bg-void bg-cyber-grid">
@@ -36,12 +60,16 @@ export default function App() {
           style={{ background: 'radial-gradient(circle, #00ff88 0%, transparent 70%)' }} />
       </div>
 
+      {screen === 'upload' && (
+        <button onClick={openHistory} className="btn-ghost fixed top-4 right-4 z-20 flex items-center gap-2 text-sm">
+          <History size={14} />
+          History
+        </button>
+      )}
+
       <AnimatePresence mode="wait">
         {screen === 'upload' && (
-          <motion.div key="upload"
-            initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -16 }} transition={{ duration: 0.4 }}
-          >
+          <motion.div key="upload" {...fadeIn}>
             <UploadScreen
               onComplete={(data, name, title, jd) => {
                 setSession({
@@ -50,7 +78,7 @@ export default function App() {
                   candidateName: name,
                   jobTitle: title,
                   completedAnswers: [],
-                  emotionSummary: {},
+                  emotionSummary: EMPTY_EMOTION_SUMMARY,
                 })
                 setScreen('preview')
               }}
@@ -59,26 +87,22 @@ export default function App() {
         )}
 
         {screen === 'preview' && session && (
-          <motion.div key="preview"
-            initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -16 }} transition={{ duration: 0.4 }}
-          >
-            <PreviewScreen
-              session={session}
-              onStartInterview={() => setScreen('interview')}
-            />
+          <motion.div key="preview" {...fadeIn}>
+            <PreviewScreen session={session} onStartInterview={() => setScreen('interview')} />
           </motion.div>
         )}
 
         {screen === 'interview' && session && (
-          <motion.div key="interview"
-            initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -16 }} transition={{ duration: 0.4 }}
-          >
+          <motion.div key="interview" {...fadeIn}>
             <InterviewRoom
               session={session}
               onComplete={(answers, emotionSummary) => {
-                setSession(s => s ? { ...s, completedAnswers: answers, emotionSummary } : s)
+                // Event handler (not an effect), so the session is saved exactly once
+                saveSession(buildRecord({
+                  answers, emotionSummary,
+                  candidateName: session.candidateName, jobTitle: session.jobTitle,
+                }))
+                setSession(s => (s ? { ...s, completedAnswers: answers, emotionSummary } : s))
                 setScreen('report')
               }}
             />
@@ -86,14 +110,18 @@ export default function App() {
         )}
 
         {screen === 'report' && session && (
-          <motion.div key="report"
-            initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -16 }} transition={{ duration: 0.4 }}
-          >
+          <motion.div key="report" {...fadeIn}>
             <PerformanceReport
               session={session}
               onRestart={() => { setSession(null); setScreen('upload') }}
+              onShowHistory={openHistory}
             />
+          </motion.div>
+        )}
+
+        {screen === 'history' && (
+          <motion.div key="history" {...fadeIn}>
+            <SessionHistory onBack={closeHistory} />
           </motion.div>
         )}
       </AnimatePresence>

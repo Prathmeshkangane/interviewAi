@@ -123,10 +123,10 @@ export function UploadScreen({ onComplete }: Props) {
             onDragLeave={() => setDragOver(false)}
             onDrop={handleDrop}
             className={`relative border-2 border-dashed rounded-xl p-8 flex flex-col items-center gap-3 cursor-pointer transition-all duration-300 ${dragOver
-                ? 'border-accent-cyan/60 bg-accent-cyan/5'
-                : resume
-                  ? 'border-accent-green/40 bg-accent-green/5'
-                  : 'border-white/10 hover:border-white/25 bg-white/2'
+              ? 'border-accent-cyan/60 bg-accent-cyan/5'
+              : resume
+                ? 'border-accent-green/40 bg-accent-green/5'
+                : 'border-white/10 hover:border-white/25 bg-white/2'
               }`}
           >
             {resume ? (

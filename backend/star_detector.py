@@ -1,7 +1,18 @@
 import re
-import spacy
+from typing import Optional
 
-nlp = spacy.load("en_core_web_sm")
+# STAR (Situation, Task, Action, Result) only makes sense for behavioral questions
+# ("tell me about a time..."). Technical and situational questions must not lose points
+# for lacking a "Situation".
+STAR_CATEGORIES = {"behavioral"}
+
+
+def star_applies(category: Optional[str]) -> bool:
+    """Unknown category -> apply STAR (keeps the old behaviour for older clients)."""
+    if not category or not category.strip():
+        return True
+    return category.strip().lower() in STAR_CATEGORIES
+
 
 SITUATION_MARKERS = [
     "at my previous", "when i was", "in my last",
@@ -35,6 +46,22 @@ RESULT_MARKERS = [
     "the impact was", "this helped", "we delivered",
 ]
 
+# An OUTCOME metric: a unit-bearing number tied to an outcome verb ("reduced latency by 40%",
+# "saved 10 hours", "serving 2000 users"). A bare number such as "2 years" or "3 projects"
+# does not count as a quantified result.
+_NUM = (
+    r"\d+(?:[.,]\d+)?\s?(?:%|percent\b|x\b|times\b|hours?\b|days?\b|weeks?\b|minutes?\b|"
+    r"seconds?\b|ms\b|users?\b|customers?\b|people\b|requests?\b|k\b)"
+)
+_OUTCOME = (
+    r"(?:reduc|increas|improv|sav|cut|boost|grew|grow|achiev|decreas|speed|faster|lower|"
+    r"rais|deliver|serv|handl|process)\w*"
+)
+METRIC_RE = re.compile(
+    rf"\b{_OUTCOME}\b[^.!?]{{0,80}}?\b{_NUM}|\b{_NUM}[^.!?]{{0,40}}?\b{_OUTCOME}\b",
+    re.IGNORECASE,
+)
+
 
 def detect_star(transcript: str) -> dict:
     if not transcript or len(transcript.strip()) < 20:
@@ -43,32 +70,28 @@ def detect_star(transcript: str) -> dict:
     text_lower = transcript.lower()
 
     situation_found = any(m in text_lower for m in SITUATION_MARKERS)
-    task_found      = any(m in text_lower for m in TASK_MARKERS)
-    action_found    = any(m in text_lower for m in ACTION_MARKERS)
-    result_found    = any(m in text_lower for m in RESULT_MARKERS)
+    task_found = any(m in text_lower for m in TASK_MARKERS)
+    action_found = any(m in text_lower for m in ACTION_MARKERS)
+    result_found = any(m in text_lower for m in RESULT_MARKERS)
 
-    # Numbers in result are a strong signal
-    has_metrics = bool(re.search(
-        r'\b\d+[\%x]?\b|\b\d+\s*(percent|times|hours|days|people|users)',
-        transcript, re.IGNORECASE
-    ))
+    has_metrics = bool(METRIC_RE.search(transcript))
     if has_metrics:
         result_found = True
 
     components = {
         "situation": situation_found,
-        "task":      task_found,
-        "action":    action_found,
-        "result":    result_found,
+        "task": task_found,
+        "action": action_found,
+        "result": result_found,
     }
     found_count = sum(components.values())
     score = int((found_count / 4) * 100)
 
-    missing  = [k.upper() for k, v in components.items() if not v]
-    present  = [k.upper() for k, v in components.items() if v]
+    missing = [k.upper() for k, v in components.items() if not v]
+    present = [k.upper() for k, v in components.items() if v]
 
-    feedback  = []
-    strengths = []
+    feedback: list[str] = []
+    strengths: list[str] = []
 
     if not situation_found:
         feedback.append("Missing SITUATION — set the scene with context first")
@@ -89,26 +112,25 @@ def detect_star(transcript: str) -> dict:
         strengths.append("Complete STAR structure — very well organized answer")
 
     return {
-        "star_score":        score,
-        "components_found":  found_count,
+        "star_score": score,
+        "components_found": found_count,
         "components_detail": components,
-        "present":           present,
-        "missing":           missing,
-        "has_metrics":       has_metrics,
-        "feedback":          feedback,
-        "strengths":         strengths,
+        "present": present,
+        "missing": missing,
+        "has_metrics": has_metrics,
+        "feedback": feedback,
+        "strengths": strengths,
     }
 
 
-def _empty_star():
+def _empty_star() -> dict:
     return {
-        "star_score":        0,
-        "components_found":  0,
-        "components_detail": {"situation": False, "task": False,
-                               "action": False, "result": False},
-        "present":           [],
-        "missing":           ["SITUATION", "TASK", "ACTION", "RESULT"],
-        "has_metrics":       False,
-        "feedback":          ["No transcript detected"],
-        "strengths":         [],
+        "star_score": 0,
+        "components_found": 0,
+        "components_detail": {"situation": False, "task": False, "action": False, "result": False},
+        "present": [],
+        "missing": ["SITUATION", "TASK", "ACTION", "RESULT"],
+        "has_metrics": False,
+        "feedback": ["No transcript detected"],
+        "strengths": [],
     }

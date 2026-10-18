@@ -3,34 +3,48 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Mic, MicOff, ChevronRight, Activity,
   Brain, Eye, Zap, CheckCircle2, Loader2,
-  Target, TrendingUp, AlertCircle, Lightbulb
+  Target, TrendingUp, AlertCircle, Lightbulb,
+  CameraOff, MessageSquarePlus, RotateCcw, ListChecks, AlertTriangle
 } from 'lucide-react'
 import { useSpeech } from '../hooks/useSpeech'
 import { useFaceAnalysis } from '../hooks/useFaceAnalysis'
-import { getFeedback } from '../lib/api'
+import type { SessionEmotionSummary } from '../hooks/useFaceAnalysis'
+import { getFeedback, getFollowUp } from '../lib/api'
 import type { FeedbackResponse, Question } from '../lib/api'
-import type { SessionData } from '../App'
+import type { CompletedAnswer, SessionData } from '../App'
 
+// Indian English recognises Indian accents noticeably better. Use 'en-US' if it feels worse for you.
+const SPEECH_LANG = 'en-IN'
 
 interface Props {
   session: SessionData
-  onComplete: (answers: SessionData['completedAnswers'], emotionSummary: Record<string, number>) => void
+  onComplete: (answers: CompletedAnswer[], emotionSummary: SessionEmotionSummary) => void
 }
 
+type Phase = 'ready' | 'recording' | 'analyzing' | 'reviewed' | 'failed'
+
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
 export function InterviewRoom({ session, onComplete }: Props) {
+  // Local copy of the question list so follow-up questions can be inserted
+  const [questions, setQuestions] = useState<Question[]>(session.analysisResult.questions)
   const [qIndex, setQIndex] = useState(0)
-  const [phase, setPhase] = useState<'ready' | 'recording' | 'analyzing' | 'reviewed'>('ready')
-  const [completedAnswers, setCompletedAnswers] = useState<SessionData['completedAnswers']>([])
+  const [phase, setPhase] = useState<Phase>('ready')
+  const [completedAnswers, setCompletedAnswers] = useState<CompletedAnswer[]>([])
   const [currentFeedback, setCurrentFeedback] = useState<FeedbackResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [cameraError, setCameraError] = useState<string | null>(null)
+  const [followUpLoading, setFollowUpLoading] = useState(false)
   const [activeTab, setActiveTab] = useState<'transcript' | 'analysis'>('transcript')
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const isSpeakingRef = useRef(false)
   const [isTTSSpeaking, setIsTTSSpeaking] = useState(false)
+  // Final transcript of the answer being reviewed (not subject to stale React state)
+  const answerRef = useRef<{ transcript: string; durationSeconds: number } | null>(null)
 
-  // ── TTS: speak question aloud, no avatar needed ──
+  // ── TTS: speak question aloud ──
   const speakQuestion = useCallback((text: string, onEnd?: () => void) => {
     if (!window.speechSynthesis) { onEnd?.(); return }
     window.speechSynthesis.cancel()
@@ -60,13 +74,16 @@ export function InterviewRoom({ session, onComplete }: Props) {
     setIsTTSSpeaking(false)
   }, [])
 
-  const speech = useSpeech()
+  const speech = useSpeech(SPEECH_LANG)
   const faceAnalysis = useFaceAnalysis(videoRef)
   const emotions = faceAnalysis.emotions
 
-  const questions = session.analysisResult.questions
   const currentQ = questions[qIndex] as Question
+  const hasFollowUpNext = !!questions[qIndex + 1]?.is_follow_up
+  const classification = currentQ?.classification
+  const isBehavioral = currentQ?.category === 'Behavioral'
 
+  // Camera
   useEffect(() => {
     let active = true
     async function startCam() {
@@ -75,68 +92,139 @@ export function InterviewRoom({ session, onComplete }: Props) {
         if (!active) { stream.getTracks().forEach(t => t.stop()); return }
         streamRef.current = stream
         if (videoRef.current) videoRef.current.srcObject = stream
-      } catch (e) { console.warn('Webcam unavailable:', e) }
+      } catch (e) {
+        const name = e instanceof DOMException ? e.name : ''
+        setCameraError(
+          name === 'NotAllowedError' ? 'Camera permission was denied. Allow camera access in the address bar to get body-language feedback.'
+            : name === 'NotFoundError' ? 'No camera was found.'
+              : 'The camera could not be started.'
+        )
+      }
     }
     startCam()
     return () => { active = false; streamRef.current?.getTracks().forEach(t => t.stop()) }
   }, [])
 
-  // Auto-speak question aloud when question changes
+  // Stop any spoken question when leaving the room
+  useEffect(() => () => { window.speechSynthesis?.cancel() }, [])
+
+  // Auto-speak question aloud when the question changes
   useEffect(() => {
     if (phase === 'ready' && currentQ?.question) {
-      const t = setTimeout(() => {
-        speakQuestion(currentQ.question)
-      }, 600)
+      const t = setTimeout(() => { speakQuestion(currentQ.question) }, 600)
       return () => clearTimeout(t)
     }
-  }, [qIndex, phase])
+  }, [qIndex, phase, currentQ?.question, speakQuestion])
 
   const startRecording = useCallback(() => {
     stopSpeaking()
     setPhase('recording')
     setActiveTab('transcript')
+    setError(null)
+    answerRef.current = null
     speech.reset()
     speech.start()
     faceAnalysis.startAnalysis()
-  }, [speech, faceAnalysis])
+  }, [speech, faceAnalysis, stopSpeaking])
 
-  const stopAndAnalyze = useCallback(async () => {
-    speech.stop()
-    faceAnalysis.stopAnalysis()
-
-    // Must have at least 10 words to analyze
-    const wordCount = speech.transcript.trim().split(/\s+/).filter(Boolean).length
-    if (wordCount < 10) {
-      setError('Please speak at least a few sentences before stopping.')
-      setPhase('recording')
-      speech.start()
-      faceAnalysis.startAnalysis()
-      return
-    }
-
+  /** Send an already-recorded answer for analysis (used for the first attempt and for retries). */
+  const analyzeAnswer = useCallback(async (answer: { transcript: string; durationSeconds: number }) => {
     setPhase('analyzing')
     setError(null)
-    const timeline = faceAnalysis.getTimeline()
     try {
-      const feedback = await getFeedback(
-        currentQ.question,
-        speech.transcript || '(no response recorded)',
-        timeline,
-        session.jobDescription,
-        speech.durationSeconds
-      )
+      const feedback = await getFeedback({
+        question: currentQ.question,
+        transcript: answer.transcript,
+        emotion_timeline: faceAnalysis.getTimeline(),
+        duration_seconds: answer.durationSeconds,
+        category: currentQ.category,
+        what_to_look_for: currentQ.what_to_look_for,
+        job_description: session.jobDescription,
+        resume_context: session.analysisResult.resume_markdown,
+        body_signals: faceAnalysis.getBodySignals(answer.durationSeconds),
+      })
       setCurrentFeedback(feedback)
       setPhase('reviewed')
       setActiveTab('analysis')
-    } catch (err: any) {
-      setError(err.message)
-      setPhase('recording')
+    } catch (err) {
+      setError(errMsg(err))
+      setPhase('failed')          // mic and camera are stopped, so offer retry instead of a fake "recording" state
     }
-  }, [speech, faceAnalysis, currentQ, session.jobDescription])
+  }, [currentQ, faceAnalysis, session.jobDescription, session.analysisResult.resume_markdown])
+
+  const stopAndAnalyze = useCallback(async () => {
+    if (phase !== 'recording') return
+    setPhase('analyzing')         // also disables the button while Chrome flushes the last words
+    setError(null)
+
+    // Waits for the recognizer to deliver its final sentence, then returns the full transcript
+    const { transcript, durationSeconds } = await speech.stop()
+
+    const wordCount = transcript.trim().split(/\s+/).filter(Boolean).length
+    if (wordCount < 10) {
+      setError('Please speak at least a few sentences before stopping.')
+      setPhase('recording')
+      speech.start()              // continues the same answer; face analysis never stopped
+      return
+    }
+
+    faceAnalysis.stopAnalysis()
+    const answer = { transcript, durationSeconds }
+    answerRef.current = answer
+    await analyzeAnswer(answer)
+  }, [phase, speech, faceAnalysis, analyzeAnswer])
+
+  const retryAnalysis = useCallback(() => {
+    if (answerRef.current) void analyzeAnswer(answerRef.current)
+  }, [analyzeAnswer])
+
+  const recordAgain = useCallback(() => {
+    setError(null)
+    setPhase('ready')
+    answerRef.current = null
+    speech.reset()
+  }, [speech])
+
+  const requestFollowUp = useCallback(async () => {
+    const answer = answerRef.current
+    if (!answer || !currentFeedback) return
+    setFollowUpLoading(true)
+    setError(null)
+    try {
+      const fu = await getFollowUp({
+        question: currentQ.question,
+        transcript: answer.transcript,
+        category: currentQ.category,
+        what_to_look_for: currentQ.what_to_look_for,
+        job_description: session.jobDescription,
+        resume_context: session.analysisResult.resume_markdown,
+      })
+      const followUp: Question = {
+        id: 1000 + currentQ.id,
+        question: fu.question,
+        category: currentQ.category,
+        difficulty: fu.difficulty,
+        what_to_look_for: fu.what_to_look_for,
+        classification: fu.classification,
+        is_follow_up: true,
+      }
+      setQuestions(prev => [...prev.slice(0, qIndex + 1), followUp, ...prev.slice(qIndex + 1)])
+    } catch (err) {
+      setError(errMsg(err))
+    } finally {
+      setFollowUpLoading(false)
+    }
+  }, [currentQ, currentFeedback, qIndex, session.jobDescription, session.analysisResult.resume_markdown])
 
   const nextQuestion = useCallback(() => {
-    if (!currentFeedback) return
-    const answer = { questionIndex: qIndex, transcript: speech.transcript, feedback: currentFeedback }
+    if (!currentFeedback || !answerRef.current) return
+    const answer: CompletedAnswer = {
+      questionIndex: qIndex,
+      question: currentQ.question,
+      category: currentQ.category,
+      transcript: answerRef.current.transcript,
+      feedback: currentFeedback,
+    }
     const newAnswers = [...completedAnswers, answer]
     setCompletedAnswers(newAnswers)
     if (qIndex + 1 >= questions.length) {
@@ -146,12 +234,14 @@ export function InterviewRoom({ session, onComplete }: Props) {
       setPhase('ready')
       setCurrentFeedback(null)
       setActiveTab('transcript')
+      answerRef.current = null
       speech.reset()
     }
-  }, [currentFeedback, qIndex, speech, completedAnswers, questions.length, faceAnalysis, onComplete])
+  }, [currentFeedback, qIndex, currentQ, speech, completedAnswers, questions.length, faceAnalysis, onComplete])
 
   const pct = ((qIndex + (phase === 'reviewed' ? 1 : 0)) / questions.length) * 100
-  const classification = currentQ?.classification
+  const bodyUnavailableReason = cameraError ?? emotions.error
+  const faceModelsLoading = !emotions.ready && !emotions.error
 
   return (
     <div className="min-h-screen flex flex-col p-4 gap-4">
@@ -181,6 +271,16 @@ export function InterviewRoom({ session, onComplete }: Props) {
         </div>
       </motion.div>
 
+      {/* Browser support warning */}
+      {!speech.supported && (
+        <div className="glass rounded-2xl p-4 flex items-start gap-3 border" style={{ borderColor: 'rgba(255,179,0,0.4)' }}>
+          <AlertTriangle size={16} className="text-accent-amber mt-0.5 shrink-0" />
+          <p className="text-white/70 text-sm font-body">
+            This browser does not support speech recognition. Use Chrome or Edge (over HTTPS or localhost) to record answers.
+          </p>
+        </div>
+      )}
+
       {/* Question Type Tip Banner */}
       <AnimatePresence>
         {classification && phase === 'ready' && (
@@ -197,14 +297,17 @@ export function InterviewRoom({ session, onComplete }: Props) {
                 {categoryEmoji(classification.category)}
               </div>
               <div className="flex-1">
-                <div className="flex items-center gap-2 mb-1">
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
                   <span className="font-display font-bold text-sm"
                     style={{ color: categoryColor(classification.category) }}>
-                    {classification.category} Question
+                    {currentQ.is_follow_up ? 'Follow-up · ' : ''}{classification.category} Question
                   </span>
-                  <span className="text-white/30 text-xs">
-                    {classification.confidence}% confident
-                  </span>
+                  {classification.model_category && (
+                    <span className="text-white/30 text-xs">
+                      classifier: {classification.model_category} ({classification.model_confidence}%)
+                      {classification.model_agrees ? ' ✓' : ''}
+                    </span>
+                  )}
                   <span className="text-white/30 text-xs ml-auto">⏱ {classification.duration}</span>
                 </div>
                 <p className="text-white/80 text-sm font-display font-semibold mb-2">
@@ -227,11 +330,11 @@ export function InterviewRoom({ session, onComplete }: Props) {
       {/* Main split */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-4">
 
-        {/* LEFT — Live Coach + Rich Video Analysis */}
+        {/* LEFT — Live Coach + Video Analysis */}
         <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.1 }} className="glass rounded-2xl overflow-hidden flex flex-col">
 
-          {/* ── TTS Speaking indicator ── */}
+          {/* TTS Speaking indicator */}
           <AnimatePresence>
             {isTTSSpeaking && (
               <motion.div
@@ -258,7 +361,7 @@ export function InterviewRoom({ session, onComplete }: Props) {
             )}
           </AnimatePresence>
 
-          {/* ── Live Coach ── */}
+          {/* Live Coach */}
           <div className="p-4 pb-2">
             <div className="flex items-center gap-2 mb-3">
               <div className="w-7 h-7 rounded-lg flex items-center justify-center"
@@ -287,42 +390,44 @@ export function InterviewRoom({ session, onComplete }: Props) {
               </div>
             )}
 
-            {/* STAR live tracker */}
-            <div className="glass-bright rounded-xl p-3 mb-3">
-              <div className="flex items-center gap-2 mb-2.5">
-                <Target size={12} className="text-accent-violet" />
-                <span className="text-white/45 text-xs font-display font-semibold uppercase tracking-widest">STAR Live Tracker</span>
+            {/* STAR live tracker: only for behavioral questions, where STAR actually applies */}
+            {isBehavioral && (
+              <div className="glass-bright rounded-xl p-3 mb-3">
+                <div className="flex items-center gap-2 mb-2.5">
+                  <Target size={12} className="text-accent-violet" />
+                  <span className="text-white/45 text-xs font-display font-semibold uppercase tracking-widest">STAR Live Tracker</span>
+                </div>
+                <div className="grid grid-cols-4 gap-2">
+                  {([
+                    { key: 'S', label: 'Situation', hint: 'Set the scene', keywords: ['when i was', 'at my', 'during my', 'we were', 'i was working', 'last year', 'in my role', 'the company', 'a few years'] },
+                    { key: 'T', label: 'Task', hint: 'Your role', keywords: ['i was responsible', 'my role', 'i needed to', 'i was asked', 'my job was', 'i had to', 'i owned', 'my objective'] },
+                    { key: 'A', label: 'Action', hint: 'What you did', keywords: ['i decided', 'i built', 'i created', 'i led', 'i implemented', 'i designed', 'first i', 'then i', 'i started', 'i worked'] },
+                    { key: 'R', label: 'Result', hint: 'The outcome', keywords: ['as a result', 'we achieved', 'which led', 'we reduced', 'we improved', 'the outcome', 'ultimately', 'we saved', 'the impact'] },
+                  ] as const).map(({ key, label, hint, keywords }) => {
+                    const tl = speech.transcript.toLowerCase()
+                    const detected = phase !== 'ready' && keywords.some(k => tl.includes(k))
+                    return (
+                      <div key={key} className="text-center">
+                        <motion.div
+                          animate={detected ? { scale: [1, 1.18, 1] } : {}}
+                          transition={{ duration: 0.3 }}
+                          className="w-9 h-9 rounded-full flex items-center justify-center mx-auto mb-1 text-xs font-bold transition-all duration-500"
+                          style={{
+                            background: detected ? 'rgba(0,255,136,0.18)' : 'rgba(255,255,255,0.05)',
+                            border: detected ? '1.5px solid rgba(0,255,136,0.55)' : '1px solid rgba(255,255,255,0.1)',
+                            color: detected ? '#00ff88' : 'rgba(255,255,255,0.2)',
+                            boxShadow: detected ? '0 0 12px rgba(0,255,136,0.2)' : 'none',
+                          }}>
+                          {detected ? '✓' : key}
+                        </motion.div>
+                        <div className="text-white/50 text-xs font-display">{label.slice(0, 3)}</div>
+                        <div className="text-white/20" style={{ fontSize: '9px' }}>{hint}</div>
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
-              <div className="grid grid-cols-4 gap-2">
-                {([
-                  { key: 'S', label: 'Situation', hint: 'Set the scene', keywords: ['when i was', 'at my', 'during my', 'we were', 'i was working', 'last year', 'in my role', 'the company', 'a few years'] },
-                  { key: 'T', label: 'Task', hint: 'Your role', keywords: ['i was responsible', 'my role', 'i needed to', 'i was asked', 'my job was', 'i had to', 'i owned', 'my objective'] },
-                  { key: 'A', label: 'Action', hint: 'What you did', keywords: ['i decided', 'i built', 'i created', 'i led', 'i implemented', 'i designed', 'first i', 'then i', 'i started', 'i worked'] },
-                  { key: 'R', label: 'Result', hint: 'The outcome', keywords: ['as a result', 'we achieved', 'which led', 'we reduced', 'we improved', 'the outcome', 'ultimately', 'we saved', 'the impact'] },
-                ] as const).map(({ key, label, hint, keywords }) => {
-                  const tl = speech.transcript.toLowerCase()
-                  const detected = phase !== 'ready' && keywords.some(k => tl.includes(k))
-                  return (
-                    <div key={key} className="text-center">
-                      <motion.div
-                        animate={detected ? { scale: [1, 1.18, 1] } : {}}
-                        transition={{ duration: 0.3 }}
-                        className="w-9 h-9 rounded-full flex items-center justify-center mx-auto mb-1 text-xs font-bold transition-all duration-500"
-                        style={{
-                          background: detected ? 'rgba(0,255,136,0.18)' : 'rgba(255,255,255,0.05)',
-                          border: detected ? '1.5px solid rgba(0,255,136,0.55)' : '1px solid rgba(255,255,255,0.1)',
-                          color: detected ? '#00ff88' : 'rgba(255,255,255,0.2)',
-                          boxShadow: detected ? '0 0 12px rgba(0,255,136,0.2)' : 'none',
-                        }}>
-                        {detected ? '✓' : key}
-                      </motion.div>
-                      <div className="text-white/50 text-xs font-display">{label.slice(0, 3)}</div>
-                      <div className="text-white/20" style={{ fontSize: '9px' }}>{hint}</div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
+            )}
 
             {/* Pace + progress */}
             <div className="grid grid-cols-2 gap-2 mb-3">
@@ -382,11 +487,18 @@ export function InterviewRoom({ session, onComplete }: Props) {
             )}
           </div>
 
-          {/* ── Rich Video Analysis ── */}
+          {/* Video */}
           <div className="px-4 pb-2">
             <div className="relative rounded-xl overflow-hidden bg-black" style={{ aspectRatio: '16/9' }}>
               <video ref={videoRef} autoPlay muted playsInline
                 className="w-full h-full object-cover" style={{ transform: 'scaleX(-1)' }} />
+
+              {cameraError && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center bg-black/80">
+                  <CameraOff size={22} className="text-white/40" />
+                  <p className="text-white/60 text-xs font-body">{cameraError}</p>
+                </div>
+              )}
 
               {/* REC badge */}
               <AnimatePresence>
@@ -401,20 +513,21 @@ export function InterviewRoom({ session, onComplete }: Props) {
                 )}
               </AnimatePresence>
 
-              {/* Eye contact indicator — top right */}
-              <div className="absolute top-2 right-2 flex items-center gap-1.5 px-2 py-1 rounded-full"
-                style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(6px)' }}>
-                <div className="w-1.5 h-1.5 rounded-full"
-                  style={{
-                    background: emotions.eyeContact ? '#00ff88' : '#ff3d71',
-                    boxShadow: `0 0 5px ${emotions.eyeContact ? '#00ff88' : '#ff3d71'}`
-                  }} />
-                <span className="text-white/60 text-xs font-display">
-                  {emotions.eyeContact ? 'Eye ✓' : 'Look at camera'}
-                </span>
-              </div>
+              {/* Facing-camera indicator (only when analysis is running) */}
+              {emotions.available && (
+                <div className="absolute top-2 right-2 flex items-center gap-1.5 px-2 py-1 rounded-full"
+                  style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(6px)' }}>
+                  <div className="w-1.5 h-1.5 rounded-full"
+                    style={{
+                      background: emotions.eyeContact ? '#00ff88' : '#ff3d71',
+                      boxShadow: `0 0 5px ${emotions.eyeContact ? '#00ff88' : '#ff3d71'}`
+                    }} />
+                  <span className="text-white/60 text-xs font-display">
+                    {emotions.eyeContact ? 'Facing camera ✓' : 'Look at camera'}
+                  </span>
+                </div>
+              )}
 
-              {/* You label */}
               <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-md text-xs font-display text-white/60"
                 style={{ background: 'rgba(0,0,0,0.6)' }}>You</div>
 
@@ -432,8 +545,8 @@ export function InterviewRoom({ session, onComplete }: Props) {
                 )}
               </AnimatePresence>
 
-              {/* Engagement ring overlay — bottom center */}
-              {phase === 'recording' && (
+              {/* Engagement overlay */}
+              {phase === 'recording' && emotions.available && (
                 <div className="absolute bottom-2 left-1/2 -translate-x-1/2">
                   <div className="flex items-center gap-1.5 px-2 py-1 rounded-full"
                     style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(6px)' }}>
@@ -448,57 +561,70 @@ export function InterviewRoom({ session, onComplete }: Props) {
             </div>
           </div>
 
-          {/* ── Emotion + body language panel ── */}
+          {/* Emotion + body language panel */}
           <div className="px-4 pb-2 space-y-2">
-            {/* Emotion bars */}
-            <div className="flex items-center justify-between">
-              <span className="text-white/30 text-xs font-display uppercase tracking-widest">Body & Emotion</span>
-              <div className="text-xs px-2 py-0.5 rounded-full font-display font-semibold"
-                style={{ background: getEmotionInterpretation(emotions).bg, color: getEmotionInterpretation(emotions).color }}>
-                {getEmotionInterpretation(emotions).label}
-              </div>
-            </div>
-
-            <EmotionBar label="Confidence" value={emotions.confidence} color="#00ff88" icon={<Zap size={11} />} />
-            <EmotionBar label="Stress" value={emotions.stress} color="#ff3d71" icon={<Activity size={11} />} />
-            <EmotionBar label="Neutral" value={emotions.neutral} color="#00d4ff" icon={<Eye size={11} />} />
-
-            {/* Body language stats grid */}
-            <div className="grid grid-cols-4 gap-1.5 pt-1">
-              {[
-                {
-                  icon: '👁️',
-                  val: `${emotions.eyeContactScore}%`,
-                  label: 'Eye Contact',
-                  color: emotions.eyeContactScore > 70 ? '#00ff88' : emotions.eyeContactScore > 45 ? '#ffb300' : '#ff3d71',
-                },
-                {
-                  icon: '📐',
-                  val: emotions.postureGood ? 'Good' : 'Fix',
-                  label: 'Posture',
-                  color: emotions.postureGood ? '#00ff88' : '#ffb300',
-                },
-                {
-                  icon: '😊',
-                  val: String(emotions.smileCount),
-                  label: 'Smiles',
-                  color: emotions.smileCount > 2 ? '#00ff88' : 'white',
-                },
-                {
-                  icon: '👁',
-                  val: emotions.lookAwaySeconds > 0 ? `${emotions.lookAwaySeconds}s` : '0s',
-                  label: 'Look Away',
-                  color: emotions.lookAwaySeconds > 5 ? '#ff3d71' : emotions.lookAwaySeconds > 2 ? '#ffb300' : '#00ff88',
-                },
-              ].map(({ icon, val, label, color }) => (
-                <div key={label} className="text-center glass-bright rounded-lg py-1.5 px-1">
-                  <div className="text-xs">{icon}</div>
-                  <div className="font-mono text-xs font-bold mt-0.5" style={{ color }}>{val}</div>
-                  <div className="text-white/30 leading-none mt-0.5" style={{ fontSize: '9px' }}>{label}</div>
+            {emotions.available ? (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-white/30 text-xs font-display uppercase tracking-widest">Body & Emotion</span>
+                  <div className="text-xs px-2 py-0.5 rounded-full font-display font-semibold"
+                    style={{ background: getEmotionInterpretation(emotions).bg, color: getEmotionInterpretation(emotions).color }}>
+                    {getEmotionInterpretation(emotions).label}
+                  </div>
                 </div>
-              ))}
-            </div>
 
+                <EmotionBar label="Confidence" value={emotions.confidence} color="#00ff88" icon={<Zap size={11} />} />
+                <EmotionBar label="Stress" value={emotions.stress} color="#ff3d71" icon={<Activity size={11} />} />
+                <EmotionBar label="Neutral" value={emotions.neutral} color="#00d4ff" icon={<Eye size={11} />} />
+
+                <div className="grid grid-cols-4 gap-1.5 pt-1">
+                  {[
+                    {
+                      icon: '👁️',
+                      val: `${emotions.eyeContactScore}%`,
+                      label: 'Facing cam',
+                      color: emotions.eyeContactScore > 70 ? '#00ff88' : emotions.eyeContactScore > 45 ? '#ffb300' : '#ff3d71',
+                    },
+                    {
+                      icon: '📐',
+                      val: emotions.postureGood ? 'Good' : 'Fix',
+                      label: 'Posture',
+                      color: emotions.postureGood ? '#00ff88' : '#ffb300',
+                    },
+                    {
+                      icon: '😊',
+                      val: String(emotions.smileCount),
+                      label: 'Smiles',
+                      color: emotions.smileCount > 2 ? '#00ff88' : 'white',
+                    },
+                    {
+                      icon: '👁',
+                      val: `${emotions.lookAwaySeconds}s`,
+                      label: 'Look Away',
+                      color: emotions.lookAwaySeconds > 5 ? '#ff3d71' : emotions.lookAwaySeconds > 2 ? '#ffb300' : '#00ff88',
+                    },
+                  ].map(({ icon, val, label, color }) => (
+                    <div key={label} className="text-center glass-bright rounded-lg py-1.5 px-1">
+                      <div className="text-xs">{icon}</div>
+                      <div className="font-mono text-xs font-bold mt-0.5" style={{ color }}>{val}</div>
+                      <div className="text-white/30 leading-none mt-0.5" style={{ fontSize: '9px' }}>{label}</div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="rounded-xl p-3 flex items-start gap-2.5"
+                style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                {faceModelsLoading
+                  ? <Loader2 size={14} className="text-white/40 animate-spin mt-0.5 shrink-0" />
+                  : <CameraOff size={14} className="text-accent-amber mt-0.5 shrink-0" />}
+                <p className="text-white/50 text-xs font-body leading-relaxed">
+                  {faceModelsLoading
+                    ? 'Loading face-analysis models…'
+                    : <>Camera analysis unavailable{bodyUnavailableReason ? `: ${bodyUnavailableReason}` : ''} Your speech is still analysed, but body language will not be scored.</>}
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Alert */}
@@ -525,6 +651,9 @@ export function InterviewRoom({ session, onComplete }: Props) {
                 {currentQ?.difficulty}
               </span>
               <span className="text-white/30 text-xs font-display">{currentQ?.category}</span>
+              {currentQ?.is_follow_up && (
+                <span className="text-accent-violet text-xs font-display font-semibold">Follow-up</span>
+              )}
             </div>
             <p className="font-display font-semibold text-white text-base leading-snug">
               {currentQ?.question}
@@ -560,11 +689,11 @@ export function InterviewRoom({ session, onComplete }: Props) {
                     </div>
                   )}
                 </div>
-                {speech.transcript ? (
+                {speech.transcript || speech.interimTranscript ? (
                   <p className="font-body text-white/80 leading-relaxed text-sm">
                     {speech.transcript}
                     {speech.interimTranscript && (
-                      <span className="text-white/35 italic">{speech.interimTranscript}</span>
+                      <span className="text-white/35 italic"> {speech.interimTranscript}</span>
                     )}
                   </p>
                 ) : (
@@ -573,7 +702,10 @@ export function InterviewRoom({ session, onComplete }: Props) {
                   </p>
                 )}
 
-                {/* Live stats during recording */}
+                {speech.error && (
+                  <p className="text-accent-red text-xs font-body mt-3">{speech.error}</p>
+                )}
+
                 {phase === 'recording' && speech.wordCount > 0 && (
                   <div className="grid grid-cols-3 gap-2 mt-4">
                     {[
@@ -601,7 +733,31 @@ export function InterviewRoom({ session, onComplete }: Props) {
                   <ScoreBadge score={currentFeedback.overall_score} size="lg" />
                 </div>
 
-                {/* STAR breakdown */}
+                {/* Rubric: what a strong answer should have covered */}
+                {(currentFeedback.key_points_covered.length > 0 || currentFeedback.key_points_missed.length > 0) && (
+                  <div className="glass-bright rounded-xl p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <ListChecks size={14} className="text-accent-cyan" />
+                      <span className="text-white/70 text-xs font-display font-semibold uppercase tracking-widest">Key Points</span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {currentFeedback.key_points_covered.map((p, i) => (
+                        <div key={`c${i}`} className="flex items-start gap-2 text-xs">
+                          <span className="text-accent-green mt-0.5">✓</span>
+                          <span className="text-white/60">{p}</span>
+                        </div>
+                      ))}
+                      {currentFeedback.key_points_missed.map((p, i) => (
+                        <div key={`m${i}`} className="flex items-start gap-2 text-xs">
+                          <span className="text-accent-amber mt-0.5">✗</span>
+                          <span className="text-white/60">{p}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* STAR breakdown (behavioral questions only) */}
                 {currentFeedback.star && (
                   <div className="glass-bright rounded-xl p-4">
                     <div className="flex items-center justify-between mb-3">
@@ -629,6 +785,40 @@ export function InterviewRoom({ session, onComplete }: Props) {
                         Missing: {currentFeedback.star.missing.join(', ')}
                       </p>
                     )}
+                  </div>
+                )}
+
+                {/* Body language: computed from webcam signals, or clearly "not scored" */}
+                {currentFeedback.body_language && (
+                  <div className="glass-bright rounded-xl p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <Eye size={14} className="text-accent-cyan" />
+                        <span className="text-white/70 text-xs font-display font-semibold uppercase tracking-widest">Body Language</span>
+                      </div>
+                      {currentFeedback.body_language.score !== null && (
+                        <ScoreBadge score={currentFeedback.body_language.score} size="sm" />
+                      )}
+                    </div>
+                    {currentFeedback.body_language.components && (
+                      <div className="grid grid-cols-4 gap-2 mb-2">
+                        {([
+                          ['Facing cam', currentFeedback.body_language.components.eye_contact],
+                          ['Posture', currentFeedback.body_language.components.posture],
+                          ['Calm', currentFeedback.body_language.components.composure],
+                          ['Expression', currentFeedback.body_language.components.expressiveness],
+                        ] as const).map(([label, value]) => (
+                          <div key={label} className="text-center">
+                            <div className="font-mono font-bold text-base"
+                              style={{ color: value >= 70 ? '#00ff88' : value >= 50 ? '#ffb300' : '#ff3d71' }}>
+                              {value}
+                            </div>
+                            <div className="text-white/40 text-xs">{label}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-white/35 text-xs font-body">{currentFeedback.body_language.note}</p>
                   </div>
                 )}
 
@@ -675,7 +865,7 @@ export function InterviewRoom({ session, onComplete }: Props) {
                     <div className="grid grid-cols-2 gap-2 text-xs mb-2">
                       <div className="flex justify-between">
                         <span className="text-white/40">Filler words</span>
-                        <span className={currentFeedback.fluency.filler_count > 5 ? 'text-accent-red' : 'text-accent-green'}>
+                        <span className={currentFeedback.fluency.filler_count > 5 ? 'text-accent-red' : 'text-white/70'}>
                           {currentFeedback.fluency.filler_count}x
                         </span>
                       </div>
@@ -689,16 +879,20 @@ export function InterviewRoom({ session, onComplete }: Props) {
                           {currentFeedback.fluency.hedge_count}x
                         </span>
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-white/40">Eye contact</span>
-                        <span className={emotions.lookAwaySeconds > 5 ? 'text-accent-amber' : 'text-accent-green'}>
-                          {emotions.lookAwaySeconds > 0 ? `${emotions.lookAwaySeconds}s away` : 'Good'}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-white/40">Smiles</span>
-                        <span className="text-accent-green">{emotions.smileCount}x</span>
-                      </div>
+                      {emotions.available && (
+                        <>
+                          <div className="flex justify-between">
+                            <span className="text-white/40">Looked away</span>
+                            <span className={emotions.lookAwaySeconds > 5 ? 'text-accent-amber' : 'text-accent-green'}>
+                              {emotions.lookAwaySeconds > 0 ? `${emotions.lookAwaySeconds}s` : 'Good'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-white/40">Smiles</span>
+                            <span className="text-white/70">{emotions.smileCount}x</span>
+                          </div>
+                        </>
+                      )}
                     </div>
                     {Object.keys(currentFeedback.fluency.filler_breakdown).length > 0 && (
                       <div className="flex flex-wrap gap-1.5 mt-2">
@@ -709,6 +903,9 @@ export function InterviewRoom({ session, onComplete }: Props) {
                           </span>
                         ))}
                       </div>
+                    )}
+                    {currentFeedback.fluency.filler_note && (
+                      <p className="text-white/25 text-xs font-body mt-2">{currentFeedback.fluency.filler_note}</p>
                     )}
                   </div>
                 )}
@@ -750,9 +947,10 @@ export function InterviewRoom({ session, onComplete }: Props) {
           </div>
 
           {/* Controls */}
-          <div className="p-4 pt-2 flex gap-3">
+          <div className="p-4 pt-2 flex gap-3 flex-wrap">
             {phase === 'ready' && (
-              <button onClick={startRecording} className="btn-primary flex-1 flex items-center justify-center gap-2 text-white">
+              <button onClick={startRecording} disabled={!speech.supported}
+                className="btn-primary flex-1 flex items-center justify-center gap-2 text-white">
                 <Mic size={16} />Start Recording
               </button>
             )}
@@ -769,13 +967,32 @@ export function InterviewRoom({ session, onComplete }: Props) {
                 <Loader2 size={16} className="animate-spin" />Analyzing...
               </button>
             )}
+            {phase === 'failed' && (
+              <>
+                <button onClick={retryAnalysis} className="btn-primary flex-1 flex items-center justify-center gap-2 text-white">
+                  <RotateCcw size={16} />Retry analysis
+                </button>
+                <button onClick={recordAgain} className="btn-ghost flex items-center justify-center gap-2 px-5">
+                  <Mic size={16} />Record again
+                </button>
+              </>
+            )}
             {phase === 'reviewed' && (
-              <button onClick={nextQuestion} className="btn-primary flex-1 flex items-center justify-center gap-2 text-white">
-                {qIndex + 1 >= questions.length
-                  ? <><CheckCircle2 size={16} />View Full Report</>
-                  : <>Next Question<ChevronRight size={16} /></>
-                }
-              </button>
+              <>
+                {!currentQ?.is_follow_up && !hasFollowUpNext && (
+                  <button onClick={requestFollowUp} disabled={followUpLoading}
+                    className="btn-ghost flex items-center justify-center gap-2 px-5">
+                    {followUpLoading ? <Loader2 size={16} className="animate-spin" /> : <MessageSquarePlus size={16} />}
+                    Follow-up question
+                  </button>
+                )}
+                <button onClick={nextQuestion} className="btn-primary flex-1 flex items-center justify-center gap-2 text-white">
+                  {qIndex + 1 >= questions.length
+                    ? <><CheckCircle2 size={16} />View Full Report</>
+                    : <>{hasFollowUpNext ? 'Answer follow-up' : 'Next Question'}<ChevronRight size={16} /></>
+                  }
+                </button>
+              </>
             )}
           </div>
           {error && <p className="px-4 pb-3 text-accent-red text-xs font-body">{error}</p>}

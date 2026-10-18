@@ -4,36 +4,35 @@ import {
   RadarChart, PolarGrid, PolarAngleAxis, Radar, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, Cell, Tooltip
 } from 'recharts'
-import { Download, RotateCcw, CheckCircle2, TrendingUp, AlertTriangle, Loader2 } from 'lucide-react'
+import { Download, RotateCcw, CheckCircle2, TrendingUp, Loader2, History } from 'lucide-react'
 import { generateReport } from '../lib/api'
+import { averageScores } from '../lib/history'
 import type { SessionData } from '../App'
 
 interface Props {
   session: SessionData
   onRestart: () => void
+  onShowHistory?: () => void
 }
 
-export function PerformanceReport({ session, onRestart }: Props) {
+const pct = (v: number) => `${Math.round(v * 100)}%`
+
+export function PerformanceReport({ session, onRestart, onShowHistory }: Props) {
   const [downloading, setDownloading] = useState(false)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
 
-  const { completedAnswers, candidateName, jobTitle, analysisResult } = session
-  const questions = analysisResult.questions
+  const { completedAnswers, candidateName, jobTitle, emotionSummary } = session
 
-  // Aggregate scores
-  const avgScore = (key: keyof (typeof completedAnswers)[0]['feedback']) =>
-    Math.round(
-      completedAnswers.reduce((s, a) => s + ((a.feedback[key] as number) || 0), 0) /
-      Math.max(completedAnswers.length, 1)
-    )
-
-  const overallScore = avgScore('overall_score')
+  const scores = averageScores(completedAnswers)
+  const overallScore = scores.overall
 
   const radarData = [
-    { subject: 'Clarity', A: avgScore('clarity_score'), fullMark: 100 },
-    { subject: 'Technical', A: avgScore('technical_score'), fullMark: 100 },
-    { subject: 'Body Lang.', A: avgScore('body_language_score'), fullMark: 100 },
-    { subject: 'Confidence', A: avgScore('confidence_score'), fullMark: 100 },
-    { subject: 'Comms.', A: avgScore('communication_score'), fullMark: 100 },
+    { subject: 'Clarity', A: scores.clarity },
+    { subject: 'Technical', A: scores.technical },
+    // Only shown when the camera produced a real score; never plotted as 0
+    ...(scores.bodyLanguage !== null ? [{ subject: 'Body Lang.', A: scores.bodyLanguage }] : []),
+    { subject: 'Confidence', A: scores.confidence },
+    { subject: 'Comms.', A: scores.communication },
   ]
 
   const barData = completedAnswers.map((a, i) => ({
@@ -46,26 +45,41 @@ export function PerformanceReport({ session, onRestart }: Props) {
 
   const scoreColor = overallScore >= 75 ? '#00ff88' : overallScore >= 50 ? '#ffb300' : '#ff3d71'
 
+  const emotionRows: [string, string][] = emotionSummary.available
+    ? [
+        ['Confidence', pct(emotionSummary.confidence)],
+        ['Stress', pct(emotionSummary.stress)],
+        ['Neutral', pct(emotionSummary.neutral)],
+        ['Faced camera', pct(emotionSummary.eyeContact)],
+        ['Good posture', pct(emotionSummary.goodPosture)],
+        ['Smiles', String(emotionSummary.smileCount)],
+        ['Looked away', `${emotionSummary.lookAwaySeconds}s`],
+      ]
+    : []
+
   const handleDownload = async () => {
     setDownloading(true)
+    setDownloadError(null)
     try {
       const blob = await generateReport({
         candidate_name: candidateName,
         job_title: jobTitle,
-        questions: questions.map(q => q.question),
+        // From the answers themselves: follow-up questions are not in the original question list
+        questions: completedAnswers.map(a => a.question),
         transcripts: completedAnswers.map(a => a.transcript),
         feedbacks: completedAnswers.map(a => a.feedback),
         overall_session_score: overallScore,
-        emotion_summary: session.emotionSummary,
+        emotion_summary: { ...emotionSummary },
       })
       const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `InterviewAI_${candidateName.replace(' ', '_')}_Report.pdf`
-      a.click()
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `InterviewAI_${candidateName.replace(/\s+/g, '_')}_Report.pdf`
+      link.click()
       URL.revokeObjectURL(url)
     } catch (err) {
       console.error(err)
+      setDownloadError(err instanceof Error ? err.message : 'Could not generate the PDF.')
     } finally {
       setDownloading(false)
     }
@@ -77,7 +91,7 @@ export function PerformanceReport({ session, onRestart }: Props) {
       <motion.div
         initial={{ opacity: 0, y: -16 }}
         animate={{ opacity: 1, y: 0 }}
-        className="flex items-start justify-between mb-8"
+        className="flex items-start justify-between mb-8 flex-wrap gap-4"
       >
         <div>
           <h1 className="font-display text-3xl font-bold text-white mb-1">Performance Report</h1>
@@ -85,7 +99,13 @@ export function PerformanceReport({ session, onRestart }: Props) {
             {candidateName} · {jobTitle} · {completedAnswers.length} questions answered
           </p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex gap-3 flex-wrap">
+          {onShowHistory && (
+            <button onClick={onShowHistory} className="btn-ghost flex items-center gap-2">
+              <History size={14} />
+              History
+            </button>
+          )}
           <button onClick={onRestart} className="btn-ghost flex items-center gap-2">
             <RotateCcw size={14} />
             Restart
@@ -100,10 +120,10 @@ export function PerformanceReport({ session, onRestart }: Props) {
           </button>
         </div>
       </motion.div>
+      {downloadError && <p className="text-accent-red text-sm font-body mb-4 -mt-4">{downloadError}</p>}
 
       {/* Score hero + radar */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
-        {/* Big score */}
         <motion.div
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -140,21 +160,24 @@ export function PerformanceReport({ session, onRestart }: Props) {
           <h2 className="font-display font-bold text-white text-xl mb-1">Overall Score</h2>
           <p className="text-white/40 text-sm font-body text-center">{getGrade(overallScore)}</p>
 
-          {/* Emotion summary */}
-          {Object.keys(session.emotionSummary).length > 0 && (
+          {/* Session body language & emotions (all ratios 0-1, counts shown as counts) */}
+          {emotionSummary.available ? (
             <div className="mt-6 w-full space-y-2">
-              <p className="text-white/30 text-xs font-display uppercase tracking-widest mb-3">Session Emotions</p>
-              {Object.entries(session.emotionSummary).map(([k, v]) => (
-                <div key={k} className="flex items-center justify-between">
-                  <span className="text-white/50 text-xs font-body capitalize">{k}</span>
-                  <span className="text-white/70 text-xs font-mono">{(v * 100).toFixed(0)}%</span>
+              <p className="text-white/30 text-xs font-display uppercase tracking-widest mb-3">Session Body & Emotion</p>
+              {emotionRows.map(([label, value]) => (
+                <div key={label} className="flex items-center justify-between">
+                  <span className="text-white/50 text-xs font-body">{label}</span>
+                  <span className="text-white/70 text-xs font-mono">{value}</span>
                 </div>
               ))}
             </div>
+          ) : (
+            <p className="mt-6 text-white/30 text-xs font-body text-center">
+              Camera analysis was unavailable, so body language and emotions were not scored.
+            </p>
           )}
         </motion.div>
 
-        {/* Radar chart */}
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
@@ -169,14 +192,7 @@ export function PerformanceReport({ session, onRestart }: Props) {
                 dataKey="subject"
                 tick={{ fill: 'rgba(255,255,255,0.5)', fontSize: 11, fontFamily: 'DM Sans' }}
               />
-              <Radar
-                name="Score"
-                dataKey="A"
-                stroke="#00d4ff"
-                fill="#00d4ff"
-                fillOpacity={0.15}
-                strokeWidth={2}
-              />
+              <Radar name="Score" dataKey="A" stroke="#00d4ff" fill="#00d4ff" fillOpacity={0.15} strokeWidth={2} />
             </RadarChart>
           </ResponsiveContainer>
         </motion.div>
@@ -184,7 +200,6 @@ export function PerformanceReport({ session, onRestart }: Props) {
 
       {/* Bar chart + strengths/improvements */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-        {/* Per-question scores */}
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
@@ -210,7 +225,6 @@ export function PerformanceReport({ session, onRestart }: Props) {
           </ResponsiveContainer>
         </motion.div>
 
-        {/* Strengths + Improvements */}
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
@@ -270,7 +284,6 @@ export function PerformanceReport({ session, onRestart }: Props) {
         <h3 className="font-display font-semibold text-white mb-5">Question Breakdown</h3>
         <div className="space-y-4">
           {completedAnswers.map((a, i) => {
-            const q = questions[a.questionIndex]
             const fb = a.feedback
             const color = fb.overall_score >= 75 ? '#00ff88' : fb.overall_score >= 50 ? '#ffb300' : '#ff3d71'
             return (
@@ -284,13 +297,18 @@ export function PerformanceReport({ session, onRestart }: Props) {
                 <div className="flex items-start justify-between gap-4 mb-3">
                   <p className="font-display font-medium text-white/90 text-sm flex-1">
                     <span className="text-white/30 mr-2">Q{i + 1}.</span>
-                    {q?.question}
+                    {a.question}
                   </p>
                   <div className="font-mono font-bold text-xl shrink-0" style={{ color }}>
                     {fb.overall_score}
                   </div>
                 </div>
                 <p className="text-white/50 text-sm font-body leading-relaxed mb-3">{fb.detailed_feedback}</p>
+                {fb.key_points_missed.length > 0 && (
+                  <p className="text-accent-amber text-xs font-body mb-2">
+                    Missed: {fb.key_points_missed.join(' · ')}
+                  </p>
+                )}
                 <p className="text-white/30 text-xs font-mono">{fb.wpm_assessment}</p>
               </motion.div>
             )

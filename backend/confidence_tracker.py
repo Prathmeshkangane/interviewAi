@@ -25,7 +25,7 @@ def track_confidence(
     seg_duration = duration_seconds / 3 if duration_seconds > 0 else 0
     scores = {}
     for part_name, part_text in parts.items():
-        analysis = analyze_fluency(part_text, seg_duration)
+        analysis = analyze_fluency(part_text, seg_duration, whole_answer=False)
         scores[part_name] = {
             "fluency_score":      analysis["fluency_score"],
             "filler_count":       analysis["filler_count"],
